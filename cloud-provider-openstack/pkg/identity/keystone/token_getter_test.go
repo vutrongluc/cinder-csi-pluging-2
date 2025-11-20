@@ -26,12 +26,12 @@ import (
 )
 
 func TestTokenGetter(t *testing.T) {
-	fakeServer := th.SetupHTTP()
-	defer fakeServer.Teardown()
+	th.SetupHTTP()
+	defer th.TeardownHTTP()
 
 	const ID = "0123456789"
 
-	fakeServer.Mux.HandleFunc("/v3/auth/tokens", func(w http.ResponseWriter, r *http.Request) {
+	th.Mux.HandleFunc("/v3/auth/tokens", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("X-Subject-Token", ID)
 		type AuthRequest struct {
 			Auth struct {
@@ -83,7 +83,7 @@ func TestTokenGetter(t *testing.T) {
 	// Correct password
 	options := Options{
 		AuthOptions: gophercloud.AuthOptions{
-			IdentityEndpoint: fakeServer.Endpoint(),
+			IdentityEndpoint: th.Endpoint(),
 			Username:         "testuser",
 			Password:         "testpw",
 			DomainName:       "default",

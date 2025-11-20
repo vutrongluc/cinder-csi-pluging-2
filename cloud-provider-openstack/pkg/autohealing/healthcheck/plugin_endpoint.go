@@ -139,13 +139,12 @@ func (check *EndpointCheck) Check(ctx context.Context, node NodeInfo, controller
 
 	var client *http.Client
 	protocol := strings.ToLower(check.Protocol)
-	switch protocol {
-	case "https":
+	if protocol == "https" {
 		tr := &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		}
 		client = &http.Client{Transport: tr, Timeout: time.Second * 5}
-	case "http":
+	} else if protocol == "http" {
 		client = &http.Client{Timeout: time.Second * 5}
 	}
 

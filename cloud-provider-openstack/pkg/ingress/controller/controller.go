@@ -354,8 +354,8 @@ func NewController(conf config.Config) *Controller {
 				// Two different versions of the same Ingress will always have different RVs.
 				return
 			}
-			newAnnotations := newIng.Annotations
-			oldAnnotations := oldIng.Annotations
+			newAnnotations := newIng.ObjectMeta.Annotations
+			oldAnnotations := oldIng.ObjectMeta.Annotations
 			delete(newAnnotations, "kubectl.kubernetes.io/last-applied-configuration")
 			delete(oldAnnotations, "kubectl.kubernetes.io/last-applied-configuration")
 
@@ -705,8 +705,8 @@ func (c *Controller) toBarbicanSecret(ctx context.Context, name string, namespac
 }
 
 func (c *Controller) ensureIngress(ctx context.Context, ing *nwv1.Ingress) error {
-	ingName := ing.Name
-	ingNamespace := ing.Namespace
+	ingName := ing.ObjectMeta.Name
+	ingNamespace := ing.ObjectMeta.Namespace
 	clusterName := c.config.ClusterName
 
 	ingfullName := fmt.Sprintf("%s/%s", ingNamespace, ingName)

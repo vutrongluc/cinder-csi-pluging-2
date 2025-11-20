@@ -23,48 +23,43 @@ import (
 	"github.com/gophercloud/gophercloud/v2/openstack/blockstorage/v3/volumes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	sharedcsi "k8s.io/cloud-provider-openstack/pkg/csi"
 	"k8s.io/cloud-provider-openstack/pkg/csi/cinder/openstack"
-	cpoerrors "k8s.io/cloud-provider-openstack/pkg/util/errors"
 )
 
-func fakeControllerServer() (*controllerServer, *openstack.OpenStackMock) {
-	osmock := new(openstack.OpenStackMock)
+var fakeCs *controllerServer
+var fakeCsMultipleClouds *controllerServer
+var osmock *openstack.OpenStackMock
+var osmockRegionX *openstack.OpenStackMock
 
-	d := NewDriver(&DriverOpts{Endpoint: FakeEndpoint, ClusterID: FakeCluster, WithTopology: true})
+// Init Controller Server
+func init() {
+	if fakeCs == nil {
+		osmock = new(openstack.OpenStackMock)
+		osmockRegionX = new(openstack.OpenStackMock)
 
-	cs := NewControllerServer(d, map[string]openstack.IOpenStack{
-		"": osmock,
-	})
-	return cs, osmock
-}
+		d := NewDriver(&DriverOpts{Endpoint: FakeEndpoint, ClusterID: FakeCluster, WithTopology: true})
 
-func fakeControllerServerWithMultipleRegions() (*controllerServer, *openstack.OpenStackMock, *openstack.OpenStackMock) {
-	osmock := new(openstack.OpenStackMock)
-	osmockAlt := new(openstack.OpenStackMock)
-
-	d := NewDriver(&DriverOpts{Endpoint: FakeEndpoint, ClusterID: FakeCluster, WithTopology: true})
-
-	cs := NewControllerServer(d, map[string]openstack.IOpenStack{
-		"":         osmock,
-		"region-x": osmockAlt,
-	})
-	return cs, osmock, osmockAlt
+		fakeCs = NewControllerServer(d, map[string]openstack.IOpenStack{
+			"": osmock,
+		})
+		fakeCsMultipleClouds = NewControllerServer(d, map[string]openstack.IOpenStack{
+			"":         osmock,
+			"region-x": osmockRegionX,
+		})
+	}
 }
 
 // Test CreateVolume
 func TestCreateVolume(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
-
 	// mock OpenStack
 	properties := map[string]string{cinderCSIClusterIDKey: FakeCluster}
+	// CreateVolume(name string, size int, vtype, availability string, snapshotID string, sourceVolID string, sourceBackupID string, tags map[string]string) (string, string, int, error)
 	osmock.On("CreateVolume", FakeVolName, mock.AnythingOfType("int"), FakeVolType, FakeAvailability, "", "", "", properties).Return(&FakeVol, nil)
-	osmock.On("GetVolumesByName", FakeVolName).Return(FakeVolListEmpty, nil)
-	osmock.On("GetBlockStorageOpts").Return(openstack.BlockStorageOpts{})
 
+	osmock.On("GetVolumesByName", FakeVolName).Return(FakeVolListEmpty, nil)
+	// Init assert
 	assert := assert.New(t)
 
 	// Fake request
@@ -99,66 +94,19 @@ func TestCreateVolume(t *testing.T) {
 	assert.NotEqual(0, len(actualRes.Volume.VolumeId), "Volume Id is nil")
 	assert.NotNil(actualRes.Volume.AccessibleTopology)
 	assert.Equal(FakeAvailability, actualRes.Volume.AccessibleTopology[0].GetSegments()[topologyKey])
-}
 
-// Test CreateVolume fails with quota exceeded error
-func TestCreateVolumeQuotaError(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
-
-	errorVolume := "errorVolume"
-
-	// mock OpenStack
-	properties := map[string]string{cinderCSIClusterIDKey: FakeCluster}
-	osmock.On("CreateVolume", errorVolume, mock.AnythingOfType("int"), FakeVolType, FakeAvailability, "", "", "", properties).Return(&volumes.Volume{}, cpoerrors.ErrQuotaExceeded)
-	osmock.On("GetVolumesByName", errorVolume).Return(FakeVolListEmpty, nil)
-	osmock.On("GetBlockStorageOpts").Return(openstack.BlockStorageOpts{})
-
-	assert := assert.New(t)
-
-	// Fake request
-	fakeReq := &csi.CreateVolumeRequest{
-		Name: errorVolume,
-		VolumeCapabilities: []*csi.VolumeCapability{
-			{
-				AccessMode: &csi.VolumeCapability_AccessMode{
-					Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
-				},
-			},
-		},
-
-		AccessibilityRequirements: &csi.TopologyRequirement{
-			Requisite: []*csi.Topology{
-				{
-					Segments: map[string]string{topologyKey: FakeAvailability},
-				},
-			},
-		},
-	}
-
-	// Invoke CreateVolume
-	_, err := fakeCs.CreateVolume(FakeCtx, fakeReq)
-	if err == nil {
-		t.Errorf("CreateVolume did not return an error")
-	}
-	statusErr, ok := status.FromError(err)
-	if !ok {
-		t.Errorf("CreateVolume did not return a grpc status as error, got %v", err)
-	}
-
-	// Assert
-	assert.Equal(statusErr.Code(), codes.ResourceExhausted)
 }
 
 // Test CreateVolume with additional param
 func TestCreateVolumeWithParam(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
-
 	// mock OpenStack
 	properties := map[string]string{cinderCSIClusterIDKey: FakeCluster}
+	// CreateVolume(name string, size int, vtype, availability string, snapshotID string, sourceVolID string, sourceBackupID string, tags map[string]string) (string, string, int, error)
+	// Vol type and availability comes from CreateVolumeRequest.Parameters
 	osmock.On("CreateVolume", FakeVolName, mock.AnythingOfType("int"), "dummyVolType", "cinder", "", "", "", properties).Return(&FakeVol, nil)
-	osmock.On("GetVolumesByName", FakeVolName).Return(FakeVolListEmpty, nil)
-	osmock.On("GetBlockStorageOpts").Return(openstack.BlockStorageOpts{})
 
+	osmock.On("GetVolumesByName", FakeVolName).Return(FakeVolListEmpty, nil)
+	// Init assert
 	assert := assert.New(t)
 
 	// Fake request
@@ -198,135 +146,10 @@ func TestCreateVolumeWithParam(t *testing.T) {
 	assert.NotEqual(0, len(actualRes.Volume.VolumeId), "Volume Id is nil")
 	assert.NotNil(actualRes.Volume.AccessibleTopology)
 	assert.Equal(FakeAvailability, actualRes.Volume.AccessibleTopology[0].GetSegments()[topologyKey])
-}
 
-// Test CreateVolume with ignore-volume-az option
-func TestCreateVolumeWithIgnoreVolumeAZ(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
-
-	properties := map[string]string{cinderCSIClusterIDKey: FakeCluster}
-	osmock.On("CreateVolume", FakeVolName, mock.AnythingOfType("int"), FakeVolType, "cinder", "", "", "", properties).Return(&FakeVol, nil)
-	osmock.On("GetVolumesByName", FakeVolName).Return(FakeVolListEmpty, nil)
-	osmock.On("GetBlockStorageOpts").Return(openstack.BlockStorageOpts{IgnoreVolumeAZ: true})
-
-	assert := assert.New(t)
-
-	// Fake request
-	fakeReq := &csi.CreateVolumeRequest{
-		Name: FakeVolName,
-		VolumeCapabilities: []*csi.VolumeCapability{
-			{
-				AccessMode: &csi.VolumeCapability_AccessMode{
-					Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
-				},
-			},
-		},
-
-		Parameters: map[string]string{
-			"availability": "cinder",
-		},
-
-		AccessibilityRequirements: &csi.TopologyRequirement{
-			Requisite: []*csi.Topology{
-				{
-					Segments: map[string]string{topologyKey: "bar"},
-				},
-				{
-					Segments: map[string]string{topologyKey: "foo"},
-				},
-			},
-			Preferred: []*csi.Topology{
-				{
-					Segments: map[string]string{topologyKey: "foo"},
-				},
-				{
-					Segments: map[string]string{topologyKey: "bar"},
-				},
-			},
-		},
-	}
-
-	// Invoke CreateVolume
-	actualRes, err := fakeCs.CreateVolume(FakeCtx, fakeReq)
-	if err != nil {
-		t.Errorf("failed to CreateVolume: %v", err)
-	}
-
-	// Assert
-	assert.NotNil(actualRes.Volume)
-	assert.NotNil(actualRes.Volume.CapacityBytes)
-	assert.NotEqual(0, len(actualRes.Volume.VolumeId), "Volume Id is nil")
-	assert.NotNil(actualRes.Volume.AccessibleTopology)
-	assert.Equal("foo", actualRes.Volume.AccessibleTopology[0].GetSegments()[topologyKey])
-}
-
-// Test CreateVolume with --with-topology=false flag
-func TestCreateVolumeWithTopologyDisabled(t *testing.T) {
-	assert := assert.New(t)
-
-	tests := []struct {
-		name             string
-		volumeParams     map[string]string
-		expectedVolumeAZ string
-	}{
-		{
-			name:             "empty paramters",
-			volumeParams:     nil,
-			expectedVolumeAZ: "",
-		},
-		{
-			name: "availability parameter",
-			volumeParams: map[string]string{
-				"availability": "cinder",
-			},
-			expectedVolumeAZ: "cinder",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			fakeCs, osmock := fakeControllerServer()
-			fakeCs.Driver.withTopology = false
-
-			properties := map[string]string{cinderCSIClusterIDKey: FakeCluster}
-			osmock.On("CreateVolume", FakeVolName, mock.AnythingOfType("int"), FakeVolType, tt.expectedVolumeAZ, "", "", "", properties).Return(&FakeVol, nil)
-			osmock.On("GetVolumesByName", FakeVolName).Return(FakeVolListEmpty, nil)
-			osmock.On("GetBlockStorageOpts").Return(openstack.BlockStorageOpts{})
-
-			// Fake request
-			fakeReq := &csi.CreateVolumeRequest{
-				Name: FakeVolName,
-				VolumeCapabilities: []*csi.VolumeCapability{
-					{
-						AccessMode: &csi.VolumeCapability_AccessMode{
-							Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
-						},
-					},
-				},
-
-				Parameters: tt.volumeParams,
-
-				AccessibilityRequirements: nil,
-			}
-
-			// Invoke CreateVolume
-			actualRes, err := fakeCs.CreateVolume(FakeCtx, fakeReq)
-			if err != nil {
-				t.Errorf("failed to CreateVolume: %v", err)
-			}
-
-			// Assert
-			assert.NotNil(actualRes.Volume)
-			assert.NotNil(actualRes.Volume.CapacityBytes)
-			assert.NotEqual(0, len(actualRes.Volume.VolumeId), "Volume Id is nil")
-			// This should always be nil if --with-topology=false
-			assert.Nil(actualRes.Volume.AccessibleTopology)
-		})
-	}
 }
 
 func TestCreateVolumeWithExtraMetadata(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
-
 	// mock OpenStack
 	properties := map[string]string{
 		cinderCSIClusterIDKey:     FakeCluster,
@@ -334,9 +157,10 @@ func TestCreateVolumeWithExtraMetadata(t *testing.T) {
 		sharedcsi.PvcNameKey:      FakePVCName,
 		sharedcsi.PvcNamespaceKey: FakePVCNamespace,
 	}
+	// CreateVolume(name string, size int, vtype, availability string, snapshotID string, sourceVolID string, sourceBackupID string, tags map[string]string) (string, string, int, error)
 	osmock.On("CreateVolume", FakeVolName, mock.AnythingOfType("int"), FakeVolType, FakeAvailability, "", "", "", properties).Return(&FakeVol, nil)
+
 	osmock.On("GetVolumesByName", FakeVolName).Return(FakeVolListEmpty, nil)
-	osmock.On("GetBlockStorageOpts").Return(openstack.BlockStorageOpts{})
 
 	// Fake request
 	fakeReq := &csi.CreateVolumeRequest{
@@ -368,16 +192,16 @@ func TestCreateVolumeWithExtraMetadata(t *testing.T) {
 	if err != nil {
 		t.Errorf("failed to CreateVolume: %v", err)
 	}
+
 }
 
 func TestCreateVolumeFromSnapshot(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
-
 	properties := map[string]string{cinderCSIClusterIDKey: FakeCluster}
+	// CreateVolume(name string, size int, vtype, availability string, snapshotID string, sourceVolID string, sourceBackupID string, tags map[string]string) (string, string, int, error)
 	osmock.On("CreateVolume", FakeVolName, mock.AnythingOfType("int"), FakeVolType, "", FakeSnapshotID, "", "", properties).Return(&FakeVolFromSnapshot, nil)
 	osmock.On("GetVolumesByName", FakeVolName).Return(FakeVolListEmpty, nil)
-	osmock.On("GetBlockStorageOpts").Return(openstack.BlockStorageOpts{})
 
+	// Init assert
 	assert := assert.New(t)
 
 	src := &csi.VolumeContentSource{
@@ -415,16 +239,16 @@ func TestCreateVolumeFromSnapshot(t *testing.T) {
 	assert.NotEqual(0, len(actualRes.Volume.VolumeId), "Volume Id is nil")
 
 	assert.Equal(FakeSnapshotID, actualRes.Volume.ContentSource.GetSnapshot().SnapshotId)
+
 }
 
 func TestCreateVolumeFromSourceVolume(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
-
 	properties := map[string]string{cinderCSIClusterIDKey: FakeCluster}
+	// CreateVolume(name string, size int, vtype, availability string, snapshotID string, sourceVolID string, sourceBackupID string, tags map[string]string) (string, string, int, error)
 	osmock.On("CreateVolume", FakeVolName, mock.AnythingOfType("int"), FakeVolType, "", "", FakeVolID, "", properties).Return(&FakeVolFromSourceVolume, nil)
 	osmock.On("GetVolumesByName", FakeVolName).Return(FakeVolListEmpty, nil)
-	osmock.On("GetBlockStorageOpts").Return(openstack.BlockStorageOpts{})
 
+	// Init assert
 	assert := assert.New(t)
 
 	volsrc := &csi.VolumeContentSource{
@@ -462,17 +286,15 @@ func TestCreateVolumeFromSourceVolume(t *testing.T) {
 	assert.NotEqual(0, len(actualRes.Volume.VolumeId), "Volume Id is nil")
 
 	assert.Equal(FakeVolID, actualRes.Volume.ContentSource.GetVolume().VolumeId)
+
 }
 
-// Test CreateVolume when a volume with the given name already exists
+// Test CreateVolumeDuplicate
 func TestCreateVolumeDuplicate(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
-
-	osmock.On("GetVolumesByName", "fake-duplicate").Return(FakeVolList, nil)
-	osmock.On("GetBlockStorageOpts").Return(openstack.BlockStorageOpts{})
-	osmock.On("GetVolumesByName", "fake-duplicate").Return(FakeVolList, nil)
-
+	// Init assert
 	assert := assert.New(t)
+
+	osmock.On("GetVolumesByName", "fake-duplicate").Return(FakeVolList, nil)
 
 	// Fake request
 	fakeReq := &csi.CreateVolumeRequest{
@@ -501,10 +323,10 @@ func TestCreateVolumeDuplicate(t *testing.T) {
 
 // Test DeleteVolume
 func TestDeleteVolume(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
-
+	// DeleteVolume(volumeID string) error
 	osmock.On("DeleteVolume", FakeVolID).Return(nil)
 
+	// Init assert
 	assert := assert.New(t)
 
 	// Fake request
@@ -527,12 +349,14 @@ func TestDeleteVolume(t *testing.T) {
 
 // Test ControllerPublishVolume
 func TestControllerPublishVolume(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
-
+	// AttachVolume(instanceID, volumeID string) (string, error)
 	osmock.On("AttachVolume", FakeNodeID, FakeVolID).Return(FakeVolID, nil)
+	// WaitDiskAttached(instanceID string, volumeID string) error
 	osmock.On("WaitDiskAttached", FakeNodeID, FakeVolID).Return(nil)
+	// GetAttachmentDiskPath(instanceID, volumeID string) (string, error)
 	osmock.On("GetAttachmentDiskPath", FakeNodeID, FakeVolID).Return(FakeDevicePath, nil)
 
+	// Init assert
 	assert := assert.New(t)
 
 	// Fake request
@@ -566,11 +390,12 @@ func TestControllerPublishVolume(t *testing.T) {
 
 // Test ControllerUnpublishVolume
 func TestControllerUnpublishVolume(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
-
+	// DetachVolume(instanceID, volumeID string) error
 	osmock.On("DetachVolume", FakeNodeID, FakeVolID).Return(nil)
+	// WaitDiskDetached(instanceID string, volumeID string) error
 	osmock.On("WaitDiskDetached", FakeNodeID, FakeVolID).Return(nil)
 
+	// Init assert
 	assert := assert.New(t)
 
 	// Fake request
@@ -611,7 +436,6 @@ func genFakeVolumeEntry(fakeVol volumes.Volume) *csi.ListVolumesResponse_Entry {
 		},
 	}
 }
-
 func genFakeVolumeEntries(fakeVolumes []volumes.Volume) []*csi.ListVolumesResponse_Entry {
 	entries := make([]*csi.ListVolumesResponse_Entry, 0, len(fakeVolumes))
 	for _, fakeVol := range fakeVolumes {
@@ -621,10 +445,9 @@ func genFakeVolumeEntries(fakeVolumes []volumes.Volume) []*csi.ListVolumesRespon
 }
 
 func TestListVolumes(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
-
 	osmock.On("ListVolumes", 2, FakeVolID).Return(FakeVolListMultiple, "", nil)
 
+	// Init assert
 	assert := assert.New(t)
 	fakeReq := &csi.ListVolumesRequest{MaxEntries: 2, StartingToken: FakeVolID}
 
@@ -665,9 +488,6 @@ type ListVolumesTestResult struct {
 }
 
 func TestGlobalListVolumesMultipleClouds(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
-	fakeCsMulti, osmockMulti, osmockMultiAlt := fakeControllerServerWithMultipleRegions()
-
 	tests := []*ListVolumesTest{
 		{
 			name:       "Single cloud, no volume",
@@ -733,11 +553,11 @@ func TestGlobalListVolumesMultipleClouds(t *testing.T) {
 			maxEntries: 0,
 			volumeSet: map[string]ListVolumeTestOSMock{
 				"": {
-					mockCloud:      osmockMulti,
+					mockCloud:      osmock,
 					mockVolumesRes: []volumes.Volume{},
 				},
 				"region-x": {
-					mockCloud:      osmockMultiAlt,
+					mockCloud:      osmockRegionX,
 					mockVolumesRes: []volumes.Volume{},
 				},
 			},
@@ -752,11 +572,11 @@ func TestGlobalListVolumesMultipleClouds(t *testing.T) {
 			maxEntries:    0,
 			volumeSet: map[string]ListVolumeTestOSMock{
 				"": {
-					mockCloud:      osmockMulti,
+					mockCloud:      osmock,
 					mockVolumesRes: []volumes.Volume{},
 				},
 				"region-x": {
-					mockCloud:      osmockMultiAlt,
+					mockCloud:      osmockRegionX,
 					mockVolumesRes: []volumes.Volume{},
 				},
 			},
@@ -769,7 +589,7 @@ func TestGlobalListVolumesMultipleClouds(t *testing.T) {
 			maxEntries: 0,
 			volumeSet: map[string]ListVolumeTestOSMock{
 				"": {
-					mockCloud: osmockMulti,
+					mockCloud: osmock,
 					mockVolumesRes: []volumes.Volume{
 						{ID: "vol1"},
 						{ID: "vol2"},
@@ -778,7 +598,7 @@ func TestGlobalListVolumesMultipleClouds(t *testing.T) {
 					},
 				},
 				"region-x": {
-					mockCloud: osmockMultiAlt,
+					mockCloud: osmockRegionX,
 					mockVolumesRes: []volumes.Volume{
 						{ID: "vol5"},
 						{ID: "vol6"},
@@ -802,7 +622,7 @@ func TestGlobalListVolumesMultipleClouds(t *testing.T) {
 			startingToken: ":region-x",
 			volumeSet: map[string]ListVolumeTestOSMock{
 				"": {
-					mockCloud: osmockMulti,
+					mockCloud: osmock,
 					mockVolumesRes: []volumes.Volume{
 						{ID: "vol1"},
 						{ID: "vol2"},
@@ -811,7 +631,7 @@ func TestGlobalListVolumesMultipleClouds(t *testing.T) {
 					},
 				},
 				"region-x": {
-					mockCloud: osmockMultiAlt,
+					mockCloud: osmockRegionX,
 					mockVolumesRes: []volumes.Volume{
 						{ID: "vol5"},
 						{ID: "vol6"},
@@ -833,11 +653,11 @@ func TestGlobalListVolumesMultipleClouds(t *testing.T) {
 			maxEntries: 2,
 			volumeSet: map[string]ListVolumeTestOSMock{
 				"": {
-					mockCloud:      osmockMulti,
+					mockCloud:      osmock,
 					mockVolumesRes: []volumes.Volume{},
 				},
 				"region-x": {
-					mockCloud:      osmockMultiAlt,
+					mockCloud:      osmockRegionX,
 					mockVolumesRes: []volumes.Volume{},
 				},
 			},
@@ -851,14 +671,14 @@ func TestGlobalListVolumesMultipleClouds(t *testing.T) {
 			maxEntries: 2,
 			volumeSet: map[string]ListVolumeTestOSMock{
 				"": {
-					mockCloud: osmockMulti,
+					mockCloud: osmock,
 					mockVolumesRes: []volumes.Volume{
 						{ID: "vol1"},
 						{ID: "vol2"},
 					},
 				},
 				"region-x": {
-					mockCloud: osmockMultiAlt,
+					mockCloud: osmockRegionX,
 					mockVolumesRes: []volumes.Volume{
 						{ID: "vol3"},
 						{ID: "vol4"},
@@ -880,14 +700,14 @@ func TestGlobalListVolumesMultipleClouds(t *testing.T) {
 			startingToken: ":region-x",
 			volumeSet: map[string]ListVolumeTestOSMock{
 				"": {
-					mockCloud: osmockMulti,
+					mockCloud: osmock,
 					mockVolumesRes: []volumes.Volume{
 						{ID: "vol1"},
 						{ID: "vol2"},
 					},
 				},
 				"region-x": {
-					mockCloud: osmockMultiAlt,
+					mockCloud: osmockRegionX,
 					mockVolumesRes: []volumes.Volume{
 						{ID: "vol3"},
 						{ID: "vol4"},
@@ -909,14 +729,14 @@ func TestGlobalListVolumesMultipleClouds(t *testing.T) {
 			startingToken: "vol4:region-x",
 			volumeSet: map[string]ListVolumeTestOSMock{
 				"": {
-					mockCloud: osmockMulti,
+					mockCloud: osmock,
 					mockVolumesRes: []volumes.Volume{
 						{ID: "vol1"},
 						{ID: "vol2"},
 					},
 				},
 				"region-x": {
-					mockCloud:    osmockMultiAlt,
+					mockCloud:    osmockRegionX,
 					mockTokenReq: "vol4",
 					mockVolumesRes: []volumes.Volume{
 						{ID: "vol5"},
@@ -933,6 +753,7 @@ func TestGlobalListVolumesMultipleClouds(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			// Init assert
 			assert := assert.New(t)
 			// Setup Mock
 			for _, volumeSet := range test.volumeSet {
@@ -965,7 +786,7 @@ func TestGlobalListVolumesMultipleClouds(t *testing.T) {
 			// Invoke ListVolumes
 			cs := fakeCs
 			if len(test.volumeSet) > 1 {
-				cs = fakeCsMulti
+				cs = fakeCsMultipleClouds
 			}
 			actualRes, err := cs.ListVolumes(FakeCtx, fakeReq)
 			if err != nil {
@@ -979,14 +800,13 @@ func TestGlobalListVolumesMultipleClouds(t *testing.T) {
 
 // Test CreateSnapshot
 func TestCreateSnapshot(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
 
 	osmock.On("CreateSnapshot", FakeSnapshotName, FakeVolID, map[string]string{cinderCSIClusterIDKey: "cluster"}).Return(&FakeSnapshotRes, nil)
 	osmock.On("ListSnapshots", map[string]string{"Name": FakeSnapshotName}).Return(FakeSnapshotListEmpty, "", nil)
 	osmock.On("WaitSnapshotReady", FakeSnapshotID).Return(FakeSnapshotRes.Status, nil)
 	osmock.On("ListBackups", map[string]string{"Name": FakeSnapshotName}).Return(FakeBackupListEmpty, nil)
 	osmock.On("GetSnapshotByID", FakeVolID).Return(&FakeSnapshotRes, nil)
-
+	// Init assert
 	assert := assert.New(t)
 
 	// Fake request
@@ -1010,8 +830,6 @@ func TestCreateSnapshot(t *testing.T) {
 
 // Test CreateSnapshot with extra metadata
 func TestCreateSnapshotWithExtraMetadata(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
-
 	properties := map[string]string{
 		cinderCSIClusterIDKey:               FakeCluster,
 		sharedcsi.VolSnapshotNameKey:        FakeSnapshotName,
@@ -1022,8 +840,9 @@ func TestCreateSnapshotWithExtraMetadata(t *testing.T) {
 
 	osmock.On("CreateSnapshot", FakeSnapshotName, FakeVolID, properties).Return(&FakeSnapshotRes, nil)
 	osmock.On("ListSnapshots", map[string]string{"Name": FakeSnapshotName}).Return(FakeSnapshotListEmpty, "", nil)
-	osmock.On("WaitSnapshotReady", FakeSnapshotID).Return(FakeSnapshotRes.Status, nil)
+	osmock.On("WaitSnapshotReady", FakeSnapshotID).Return(nil)
 
+	// Init assert
 	assert := assert.New(t)
 
 	// Fake request
@@ -1052,11 +871,11 @@ func TestCreateSnapshotWithExtraMetadata(t *testing.T) {
 
 // Test DeleteSnapshot
 func TestDeleteSnapshot(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
-
+	// DeleteSnapshot(volumeID string) error
 	osmock.On("DeleteSnapshot", FakeSnapshotID).Return(nil)
 	osmock.On("DeleteBackup", FakeSnapshotID).Return(nil)
 
+	// Init assert
 	assert := assert.New(t)
 
 	// Fake request
@@ -1078,10 +897,7 @@ func TestDeleteSnapshot(t *testing.T) {
 }
 
 func TestListSnapshots(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
-
 	osmock.On("ListSnapshots", map[string]string{"Limit": "1", "Marker": FakeVolID, "Status": "available"}).Return(FakeSnapshotsRes, "", nil)
-
 	assert := assert.New(t)
 
 	fakeReq := &csi.ListSnapshotsRequest{MaxEntries: 1, StartingToken: FakeVolID}
@@ -1096,12 +912,14 @@ func TestListSnapshots(t *testing.T) {
 }
 
 func TestControllerExpandVolume(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
-
 	tState := []string{"available", "in-use"}
+	// ExpandVolume(volumeID string, status string, size int)
 	osmock.On("ExpandVolume", FakeVolID, openstack.VolumeAvailableStatus, 5).Return(nil)
+
+	// WaitVolumeTargetStatus(volumeID string, tState []string) error
 	osmock.On("WaitVolumeTargetStatus", FakeVolID, tState).Return(nil)
 
+	// Init assert
 	assert := assert.New(t)
 
 	// Fake request
@@ -1126,13 +944,14 @@ func TestControllerExpandVolume(t *testing.T) {
 
 	// Assert
 	assert.Equal(expectedRes, actualRes)
+
 }
 
 func TestValidateVolumeCapabilities(t *testing.T) {
-	fakeCs, osmock := fakeControllerServer()
-
+	// GetVolume(volumeID string)
 	osmock.On("GetVolume", FakeVolID).Return(FakeVol1)
 
+	// Init assert
 	assert := assert.New(t)
 
 	// fake req
@@ -1181,6 +1000,7 @@ func TestValidateVolumeCapabilities(t *testing.T) {
 	}
 
 	actualRes2, err := fakeCs.ValidateVolumeCapabilities(FakeCtx, fakereq2)
+
 	if err != nil {
 		t.Errorf("failed to ValidateVolumeCapabilities: %v", err)
 	}
@@ -1188,4 +1008,5 @@ func TestValidateVolumeCapabilities(t *testing.T) {
 	// assert
 	assert.Equal(expectedRes, actualRes)
 	assert.Equal(expectedRes2, actualRes2)
+
 }

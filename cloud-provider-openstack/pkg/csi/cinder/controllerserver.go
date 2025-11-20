@@ -18,7 +18,6 @@ package cinder
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -86,19 +85,21 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	// Volume Type
 	volType := volParams["type"]
 
-	// Volume AZ
-
-	accessibleTopologyReq := req.GetAccessibilityRequirements()
-	ignoreVolumeAZ := cloud.GetBlockStorageOpts().IgnoreVolumeAZ
-
-	// First check if volAvailability is already specified, if not get preferred from Topology
-	// Required, in case vol AZ is different from node AZ
 	var volAvailability string
-	if volParams["availability"] != "" {
+	if cs.Driver.withTopology {
+		// First check if volAvailability is already specified, if not get preferred from Topology
+		// Required, incase vol AZ is different from node AZ
 		volAvailability = volParams["availability"]
-	} else if cs.Driver.withTopology && accessibleTopologyReq != nil {
-		volAvailability = sharedcsi.GetAZFromTopology(topologyKey, accessibleTopologyReq)
+		if volAvailability == "" {
+			accessibleTopologyReq := req.GetAccessibilityRequirements()
+			// Check from Topology
+			if accessibleTopologyReq != nil {
+				volAvailability = sharedcsi.GetAZFromTopology(topologyKey, accessibleTopologyReq)
+			}
+		}
 	}
+
+	ignoreVolumeAZ := cloud.GetBlockStorageOpts().IgnoreVolumeAZ
 
 	// get the PVC annotation
 	pvcAnnotations := sharedcsi.GetPVCAnnotations(cs.Driver.pvcLister, volParams)
@@ -118,11 +119,8 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 			return nil, status.Error(codes.AlreadyExists, "Volume Already exists with same name and different capacity")
 		}
 		klog.V(4).Infof("Volume %s already exists in Availability Zone: %s of size %d GiB", vols[0].ID, vols[0].AvailabilityZone, vols[0].Size)
-		accessibleTopology := getTopology(&vols[0], accessibleTopologyReq, cs.Driver.withTopology, ignoreVolumeAZ)
-		return getCreateVolumeResponse(&vols[0], nil, accessibleTopology), nil
-	}
-
-	if len(vols) > 1 {
+		return getCreateVolumeResponse(&vols[0], nil, ignoreVolumeAZ, req.GetAccessibilityRequirements()), nil
+	} else if len(vols) > 1 {
 		klog.V(3).Infof("found multiple existing volumes with selected name (%s) during create", volName)
 		return nil, status.Error(codes.Internal, "Multiple volumes reported by Cinder with same name")
 	}
@@ -206,13 +204,13 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 
 	// Set scheduler hints if affinity or anti-affinity is set in PVC annotations
 	var schedulerHints volumes.SchedulerHintOptsBuilder
-	volCtx := map[string]string{}
+	var volCtx map[string]string
 	affinity := pvcAnnotations[affinityKey]
 	antiAffinity := pvcAnnotations[antiAffinityKey]
 	if affinity != "" || antiAffinity != "" {
 		klog.V(4).Infof("CreateVolume: Getting scheduler hints: affinity=%s, anti-affinity=%s", affinity, antiAffinity)
 
-		// Resolve volume names to UUIDs
+		// resolve volume names to UUIDs
 		affinity, err = cloud.ResolveVolumeListToUUIDs(ctx, affinity)
 		if err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "failed to resolve affinity volume UUIDs: %v", err)
@@ -222,7 +220,6 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 			return nil, status.Errorf(codes.InvalidArgument, "failed to resolve anti-affinity volume UUIDs: %v", err)
 		}
 
-		// Note that this is context for the k8s CSI volume, not the Cinder volume
 		volCtx = util.SetMapIfNotEmpty(volCtx, "affinity", affinity)
 		volCtx = util.SetMapIfNotEmpty(volCtx, "anti-affinity", antiAffinity)
 		schedulerHints = &volumes.SchedulerHintOpts{
@@ -236,9 +233,6 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	vol, err := cloud.CreateVolume(ctx, opts, schedulerHints)
 	if err != nil {
 		klog.Errorf("Failed to CreateVolume: %v", err)
-		if errors.Is(err, cpoerrors.ErrQuotaExceeded) {
-			return nil, status.Errorf(codes.ResourceExhausted, "CreateVolume failed due to exceeded quota %v", err)
-		}
 		return nil, status.Errorf(codes.Internal, "CreateVolume failed with error %v", err)
 	}
 
@@ -249,9 +243,7 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 
 	klog.V(4).Infof("CreateVolume: Successfully created volume %s in Availability Zone: %s of size %d GiB", vol.ID, vol.AvailabilityZone, vol.Size)
 
-	accessibleTopology := getTopology(vol, accessibleTopologyReq, cs.Driver.withTopology, ignoreVolumeAZ)
-
-	return getCreateVolumeResponse(vol, volCtx, accessibleTopology), nil
+	return getCreateVolumeResponse(vol, volCtx, ignoreVolumeAZ, req.GetAccessibilityRequirements()), nil
 }
 
 func (d *controllerServer) ControllerModifyVolume(ctx context.Context, req *csi.ControllerModifyVolumeRequest) (*csi.ControllerModifyVolumeResponse, error) {
@@ -669,6 +661,7 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 			ReadyToUse:     true,
 		},
 	}, nil
+
 }
 
 func (cs *controllerServer) createSnapshot(ctx context.Context, cloud openstack.IOpenStack, name string, volumeID string, parameters map[string]string) (snap *snapshots.Snapshot, err error) {
@@ -870,6 +863,7 @@ func (cs *controllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnap
 		Entries:   sentries,
 		NextToken: nextPageToken,
 	}, nil
+
 }
 
 // ControllerGetCapabilities implements the default GRPC callout.
@@ -1039,38 +1033,14 @@ func (cs *controllerServer) ControllerExpandVolume(ctx context.Context, req *csi
 	}, nil
 }
 
-func getTopology(vol *volumes.Volume, topologyReq *csi.TopologyRequirement, withTopology bool, ignoreVolumeAZ bool) []*csi.Topology {
-	var accessibleTopology []*csi.Topology
-	if !withTopology {
-		return accessibleTopology
-	}
-
-	if ignoreVolumeAZ {
-		if topologyReq != nil {
-			accessibleTopology = topologyReq.GetPreferred()
-		}
-	} else if vol.AvailabilityZone != "" {
-		// NOTE(stephenfin): We retrieve the AZ from the created volume rather than
-		// using the value we provided in our request since these can differ due to
-		// Cinder's '[DEFAULT] allow_availability_zone_fallback' option.
-		accessibleTopology = []*csi.Topology{
-			{Segments: map[string]string{topologyKey: vol.AvailabilityZone}},
-		}
-	}
-	return accessibleTopology
-}
-
-func getCreateVolumeResponse(vol *volumes.Volume, volCtx map[string]string, accessibleTopology []*csi.Topology) *csi.CreateVolumeResponse {
-	var volSrc *csi.VolumeContentSource
-
-	if volCtx == nil {
-		volCtx = map[string]string{}
-	}
+func getCreateVolumeResponse(vol *volumes.Volume, volCtx map[string]string, ignoreVolumeAZ bool, accessibleTopologyReq *csi.TopologyRequirement) *csi.CreateVolumeResponse {
+	var volsrc *csi.VolumeContentSource
+	volCnx := map[string]string{}
 
 	if vol.SnapshotID != "" {
-		volCtx[ResizeRequired] = "true"
+		volCnx[ResizeRequired] = "true"
 
-		volSrc = &csi.VolumeContentSource{
+		volsrc = &csi.VolumeContentSource{
 			Type: &csi.VolumeContentSource_Snapshot{
 				Snapshot: &csi.VolumeContentSource_SnapshotSource{
 					SnapshotId: vol.SnapshotID,
@@ -1080,9 +1050,9 @@ func getCreateVolumeResponse(vol *volumes.Volume, volCtx map[string]string, acce
 	}
 
 	if vol.SourceVolID != "" {
-		volCtx[ResizeRequired] = "true"
+		volCnx[ResizeRequired] = "true"
 
-		volSrc = &csi.VolumeContentSource{
+		volsrc = &csi.VolumeContentSource{
 			Type: &csi.VolumeContentSource_Volume{
 				Volume: &csi.VolumeContentSource_VolumeSource{
 					VolumeId: vol.SourceVolID,
@@ -1092,13 +1062,28 @@ func getCreateVolumeResponse(vol *volumes.Volume, volCtx map[string]string, acce
 	}
 
 	if vol.BackupID != nil && *vol.BackupID != "" {
-		volCtx[ResizeRequired] = "true"
+		volCnx[ResizeRequired] = "true"
 
-		volSrc = &csi.VolumeContentSource{
+		volsrc = &csi.VolumeContentSource{
 			Type: &csi.VolumeContentSource_Snapshot{
 				Snapshot: &csi.VolumeContentSource_SnapshotSource{
 					SnapshotId: *vol.BackupID,
 				},
+			},
+		}
+	}
+
+	var accessibleTopology []*csi.Topology
+	// If ignore-volume-az is true , dont set the accessible topology to volume az,
+	// use from preferred topologies instead.
+	if ignoreVolumeAZ {
+		if accessibleTopologyReq != nil {
+			accessibleTopology = accessibleTopologyReq.GetPreferred()
+		}
+	} else {
+		accessibleTopology = []*csi.Topology{
+			{
+				Segments: map[string]string{topologyKey: vol.AvailabilityZone},
 			},
 		}
 	}
@@ -1108,8 +1093,8 @@ func getCreateVolumeResponse(vol *volumes.Volume, volCtx map[string]string, acce
 			VolumeId:           vol.ID,
 			CapacityBytes:      int64(vol.Size * 1024 * 1024 * 1024),
 			AccessibleTopology: accessibleTopology,
-			ContentSource:      volSrc,
-			VolumeContext:      volCtx,
+			ContentSource:      volsrc,
+			VolumeContext:      volCnx,
 		},
 	}
 

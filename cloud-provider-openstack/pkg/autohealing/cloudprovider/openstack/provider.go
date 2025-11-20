@@ -584,7 +584,7 @@ func (provider CloudProvider) UpdateHealthStatus(ctx context.Context, masters []
 	if err != nil {
 		return fmt.Errorf("failed to build health status reason for cluster %s, error: %v", clusterName, err)
 	}
-	healthStatusReason := strings.ReplaceAll(string(jsonDumps), "\"", "'")
+	healthStatusReason := strings.Replace(string(jsonDumps), "\"", "'", -1)
 
 	updateOpts := []clusters.UpdateOptsBuilder{
 		clusters.UpdateOpts{

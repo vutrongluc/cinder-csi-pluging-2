@@ -266,14 +266,14 @@ func (os *OpenStack) waitLoadbalancerActiveProvisioningStatus(ctx context.Contex
 			return false, err
 		}
 		provisioningStatus = loadbalancer.ProvisioningStatus
-		switch loadbalancer.ProvisioningStatus {
-		case activeStatus:
+		if loadbalancer.ProvisioningStatus == activeStatus {
 			return true, nil
-		case errorStatus:
+		} else if loadbalancer.ProvisioningStatus == errorStatus {
 			return true, fmt.Errorf("loadbalancer has gone into ERROR state")
-		default:
+		} else {
 			return false, nil
 		}
+
 	})
 
 	if wait.Interrupted(err) {

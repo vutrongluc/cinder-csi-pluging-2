@@ -521,8 +521,7 @@ func (_m *OpenStackMock) GetMetadataOpts() metadata.Opts {
 
 // GetBlockStorageOpts provides a mock function to return BlockStorageOpts
 func (_m *OpenStackMock) GetBlockStorageOpts() BlockStorageOpts {
-	args := _m.Called()
-	return args.Get(0).(BlockStorageOpts)
+	return BlockStorageOpts{}
 }
 
 // ResolveVolumeListToUUIDs provides a mock function to return volume UUIDs

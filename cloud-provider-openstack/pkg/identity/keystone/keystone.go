@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/gophercloud/gophercloud/v2"
 	"github.com/gophercloud/gophercloud/v2/openstack"
 	"github.com/gophercloud/gophercloud/v2/openstack/utils"
@@ -115,11 +116,11 @@ func (k *Auth) Run() {
 		go wait.Until(k.runWorker, time.Second, k.stopCh)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/webhook", k.Handler)
+	r := chi.NewRouter()
+	r.HandleFunc("/webhook", k.Handler)
 
 	klog.Infof("Starting webhook server...")
-	klog.Fatal(http.ListenAndServeTLS(k.config.Address, k.config.CertFile, k.config.KeyFile, mux))
+	klog.Fatal(http.ListenAndServeTLS(k.config.Address, k.config.CertFile, k.config.KeyFile, r))
 }
 
 func (k *Auth) enqueueConfigMap(obj interface{}) {
@@ -264,8 +265,7 @@ func (k *Auth) Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch kind {
-	case "TokenReview":
+	if kind == "TokenReview" {
 		var token = data["spec"].(map[string]interface{})["token"].(string)
 		userInfo := k.authenticateToken(ctx, w, r, token, data)
 
@@ -277,9 +277,9 @@ func (k *Auth) Handler(w http.ResponseWriter, r *http.Request) {
 				klog.Errorf("an error occurred during data synchronization: %v", err)
 			}
 		}
-	case "SubjectAccessReview":
+	} else if kind == "SubjectAccessReview" {
 		k.authorizeToken(w, r, data)
-	default:
+	} else {
 		http.Error(w, fmt.Sprintf("unknown kind/apiVersion %q %q", kind, apiVersion), http.StatusBadRequest)
 	}
 }

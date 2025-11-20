@@ -181,13 +181,12 @@ func WaitActiveAndGetLoadBalancer(ctx context.Context, client *gophercloud.Servi
 			klog.Warningf("Failed to fetch loadbalancer status from OpenStack (lbID %q): %s", loadbalancerID, err)
 			return false, nil
 		}
-		switch loadbalancer.ProvisioningStatus {
-		case activeStatus:
+		if loadbalancer.ProvisioningStatus == activeStatus {
 			klog.InfoS("Load balancer ACTIVE", "lbID", loadbalancerID)
 			return true, nil
-		case errorStatus:
+		} else if loadbalancer.ProvisioningStatus == errorStatus {
 			return true, fmt.Errorf("loadbalancer %s has gone into ERROR state", loadbalancerID)
-		default:
+		} else {
 			return false, nil
 		}
 

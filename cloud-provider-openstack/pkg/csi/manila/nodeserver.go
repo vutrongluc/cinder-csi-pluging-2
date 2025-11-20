@@ -133,7 +133,6 @@ func (ns *nodeServer) buildVolumeContext(ctx context.Context, volID volumeID, sh
 	sa := getShareAdapter(ns.d.shareProto)
 	opts := &shareadapters.VolumeContextArgs{
 		Locations: availableExportLocations,
-		Share:     share,
 		Options:   shareOpts,
 	}
 	volumeContext, err = sa.BuildVolumeContext(opts)

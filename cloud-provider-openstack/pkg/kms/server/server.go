@@ -27,7 +27,6 @@ type BarbicanService interface {
 
 // KMSserver struct
 type KMSserver struct {
-	pb.UnimplementedKeyManagementServiceServer
 	cfg      barbican.Config
 	barbican BarbicanService
 }
@@ -93,7 +92,7 @@ func Run(configFilePath string, socketpath string, sigchan <-chan os.Signal) (er
 			}
 		case err := <-serverCh:
 			if err != nil {
-				return fmt.Errorf("failed to listen: %w", err)
+				return fmt.Errorf("Failed to listen: %w", err)
 			}
 		}
 	}
