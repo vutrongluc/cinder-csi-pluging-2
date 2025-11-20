@@ -1,0 +1,41 @@
+---
+- name: Check if go has satisfied requirement
+  shell: /usr/local/go/bin/go version |grep -Eo '([0-9]+\.)+[0-9]+'
+  ignore_errors: yes
+  register: curr_go_version
+
+- name: Download the Go tarball
+  get_url:
+    url: '{{ go_download_location }}'
+    dest: '/usr/local/src/{{ go_tarball }}'
+  when:
+    - curr_go_version.stdout != go_version
+
+- name: Remove old installation of Go
+  file:
+    path: /usr/local/go
+    state: absent
+  when:
+    - curr_go_version.stdout != go_version
+
+- name: Extract the Go tarball to place
+  unarchive:
+    src: '/usr/local/src/{{ go_tarball }}'
+    dest: /usr/local
+    remote_src: yes
+  when:
+    - curr_go_version.stdout != go_version
+
+- name: Set GOPATH
+  lineinfile:
+    path: ~/.bashrc
+    line: 'export GOPATH=$HOME'
+    create: true
+    state: present
+
+- name: Add go binary path to PATH
+  lineinfile:
+    path: ~/.bashrc
+    line: 'export PATH=/usr/local/go/bin:{{ ansible_user_dir }}/bin:$PATH'
+    create: true
+    state: present
