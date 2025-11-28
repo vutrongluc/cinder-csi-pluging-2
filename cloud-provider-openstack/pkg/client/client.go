@@ -71,6 +71,12 @@ type AuthOpts struct {
 	ApplicationCredentialID     string `gcfg:"application-credential-id" mapstructure:"application-credential-id" name:"os-applicationCredentialID" value:"optional" dependsOn:"os-applicationCredentialSecret"`
 	ApplicationCredentialName   string `gcfg:"application-credential-name" mapstructure:"application-credential-name" name:"os-applicationCredentialName" value:"optional" dependsOn:"os-applicationCredentialSecret"`
 	ApplicationCredentialSecret string `gcfg:"application-credential-secret" mapstructure:"application-credential-secret" name:"os-applicationCredentialSecret" value:"optional" dependsOn:"os-applicationCredentialID|os-applicationCredentialName"`
+	CustomerId                  string `name:"customerId" value:"optional"`
+	Pw                          string `name:"pw" value:"optional"`
+	Token                       string `name:"token" value:"optional"`
+	ClusterId                   string `name:"clusterId" value:"optional"`
+	Mail                        string `name:"mail" value:"optional"`
+	Url                         string `name:"url" value:"optional"`
 }
 
 func LogCfg(authOpts AuthOpts) {

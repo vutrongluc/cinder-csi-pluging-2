@@ -17,8 +17,13 @@ limitations under the License.
 package openstack
 
 import (
+	"bytes"
 	"context"
+	"crypto/aes"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 
@@ -106,6 +111,48 @@ func logcfg(cfg Config) {
 	klog.Infof("Block storage opts: %v", cfg.BlockStorage)
 }
 
+// Loại bỏ padding kiểu PKCS7
+func pkcs7Unpadding(data []byte) ([]byte, error) {
+	length := len(data)
+	if length == 0 {
+		return nil, fmt.Errorf("data emtry")
+	}
+	padLen := int(data[length-1])
+	if padLen > length {
+		return nil, fmt.Errorf("padding error")
+	}
+	return data[:(length - padLen)], nil
+}
+
+// Giải mã AES-ECB
+func DecryptECB(cipherTextBase64 string) (string, error) {
+	cipherText, err := base64.StdEncoding.DecodeString(cipherTextBase64)
+	if err != nil {
+		return "", fmt.Errorf("Error decode base64: %v", err)
+	}
+	key := "Vtdc@2024@2025#$"
+	block, err := aes.NewCipher([]byte(key))
+	if err != nil {
+		return "", fmt.Errorf("Error cipher: %v", err)
+	}
+
+	if len(cipherText)%aes.BlockSize != 0 {
+		return "", fmt.Errorf("False length string")
+	}
+
+	decrypted := make([]byte, len(cipherText))
+	for bs, be := 0, block.BlockSize(); bs < len(cipherText); bs, be = bs+block.BlockSize(), be+block.BlockSize() {
+		block.Decrypt(decrypted[bs:be], cipherText[bs:be])
+	}
+
+	unpadded, err := pkcs7Unpadding(decrypted)
+	if err != nil {
+		return "", fmt.Errorf("Error unpadding: %v", err)
+	}
+
+	return string(unpadded), nil
+}
+
 // GetConfigFromFiles retrieves config options from file
 func GetConfigFromFiles(configFilePaths []string) (Config, error) {
 	var cfg Config
@@ -168,6 +215,49 @@ func InitOpenStackProvider(cfgFiles []string, httpEndpoint string) {
 	klog.V(2).Infof("InitOpenStackProvider configFiles: %s", configFiles)
 }
 
+type CredentialResponse struct {
+	ID     string `json:"id"`
+	Secret string `json:"secret"`
+	Url    string `json:"url"`
+}
+
+func FetchCredentialsFromAPI(apiURL string, token string, payload map[string]interface{}) (string, string, string, error) {
+	// Chuyển payload sang JSON
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", "", fmt.Errorf("failed to marshal payload: %v", err)
+	}
+
+	// Tạo request POST với header Authorization
+	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", "", "", fmt.Errorf("failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	// Thực hiện request
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", "", fmt.Errorf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Đọc và giải mã phản hồi
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", "", fmt.Errorf("failed to read response body: %v", err)
+	}
+
+	var creds CredentialResponse
+	if err := json.Unmarshal(body, &creds); err != nil {
+		return "", "", "", fmt.Errorf("failed to decode response: %v", err)
+	}
+
+	return creds.Url, creds.ID, creds.Secret, nil
+}
+
 // CreateOpenStackProvider creates Openstack Instance with custom Global config param
 func CreateOpenStackProvider(cloudName string) (IOpenStack, error) {
 	// Get config from file
@@ -186,6 +276,44 @@ func CreateOpenStackProvider(cloudName string) (IOpenStack, error) {
 	if len(cfg.Metadata.SearchOrder) == 0 {
 		cfg.Metadata.SearchOrder = fmt.Sprintf("%s,%s", metadata.ConfigDriveID, metadata.MetadataID)
 	}
+
+	//for k, v := range cfg.Global {
+	//	klog.Infof("Bien global : Secret key = %s, value = %s", k, v)
+	//}
+	//
+	//klog.Infof("Bien global 3: cloud config = %+v", global)
+
+	payload := map[string]interface{}{
+		"customerId": global.CustomerId,
+		"clusterId":  global.ClusterId,
+		"planType":   "k8s",
+	}
+	token, errSecret := DecryptECB(global.Token)
+
+	credential := global.Url + "/api/v1/kubernetes/cluster/block-storage/credential"
+	url, id, secret, err := FetchCredentialsFromAPI(credential, token, payload)
+
+	decryptedSecret, errSecret := DecryptECB(secret)
+	if errSecret != nil {
+		fmt.Println("Error:", errSecret)
+	} else {
+		global.ApplicationCredentialSecret = decryptedSecret
+	}
+
+	decryptedId, errId := DecryptECB(id)
+	if errId != nil {
+		fmt.Println("Error:", errId)
+	} else {
+		global.ApplicationCredentialID = decryptedId
+	}
+
+	decryptedURL, errURL := DecryptECB(url)
+	if errURL != nil {
+		fmt.Println("Error:", errId)
+	} else {
+		global.AuthURL = decryptedURL
+	}
+	//klog.Infof("Bien global 4: cloud config = %+v", global)
 
 	provider, err := client.NewOpenStackClient(global, "cinder-csi-plugin", userAgentData...)
 	if err != nil {
