@@ -17,8 +17,13 @@ limitations under the License.
 package cinder
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
 	"slices"
 	"sort"
 	"strconv"
@@ -32,6 +37,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"k8s.io/cloud-provider-openstack/pkg/client"
 
 	sharedcsi "k8s.io/cloud-provider-openstack/pkg/csi"
 	"k8s.io/cloud-provider-openstack/pkg/csi/cinder/openstack"
@@ -51,6 +57,68 @@ const (
 	affinityKey           = "cinder.csi.openstack.org/affinity"
 	antiAffinityKey       = "cinder.csi.openstack.org/anti-affinity"
 )
+
+type ResponseData struct {
+	Success bool `json:"success"`
+	Total   int  `json:"total"`
+	Usage   int  `json:"usage"`
+}
+
+func CallToCsa(url string, token string, payload map[string]interface{}) (*ResponseData, error) {
+	// Chuyển payload thành JSON
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("lỗi mã hóa JSON: %v", err)
+	}
+
+	// Tạo client HTTP
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("lỗi gửi POST: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{}
+
+	// Gửi POST request
+	//resp, err := client.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("lỗi gửi POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Kiểm tra mã phản hồi
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API trả về mã lỗi: %d", resp.StatusCode)
+	}
+	// Đọc dữ liệu trả về
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read error: %v", err)
+	}
+
+	// Giải mã JSON thành object
+	var result ResponseData
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal error: %v", err)
+	}
+
+	return &result, nil
+}
+
+func InitGlobalConfig() (*client.AuthOpts, error) {
+	configFile := os.Getenv("CLOUD_CONFIG")
+
+	cfg, err := openstack.GetConfigFromFiles([]string{configFile})
+	if err != nil {
+		klog.Infof("failed to get config:%+v, %v", configFile, err)
+	}
+	global := cfg.Global[""]
+	return global, nil
+}
 
 func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
 	klog.V(4).Infof("CreateVolume: called with args %+v", protosanitizer.StripSecrets(req))
@@ -230,6 +298,32 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		klog.V(4).Infof("CreateVolume: Resolved scheduler hints: affinity=%s, anti-affinity=%s", affinity, antiAffinity)
 	}
 
+	global, _ := InitGlobalConfig()
+	payload := map[string]interface{}{
+		"customerId": global.CustomerId,
+		"clusterId":  global.ClusterId,
+		"size":       opts.Size,
+		"volumeName": opts.Name,
+		"type":       "create",
+		"planType":   "k8s",
+	}
+	token, errSecret := openstack.DecryptECB(global.Token)
+	if errSecret != nil {
+		fmt.Println("error:", errSecret)
+	}
+
+	url_validate := global.Url + "/api/v1/kubernetes/cluster/block-storage/validate"
+	ok, err := CallToCsa(url_validate, token, payload)
+	if err != nil {
+		klog.V(1).Infof("Error call api validate csa create %v", err)
+		return nil, status.Errorf(codes.ResourceExhausted, "CreateVolume failed due to exceeded quota %v", err)
+	} else {
+		if !ok.Success {
+			return nil, status.Errorf(codes.InvalidArgument, "Exceeded initial capacity. Because total size: %v GB and usage size: %v GB", ok.Total, ok.Usage)
+		}
+		fmt.Println("call api validate csa create:", ok)
+	}
+
 	vol, err := cloud.CreateVolume(ctx, opts, schedulerHints)
 	if err != nil {
 		klog.Errorf("Failed to CreateVolume: %v", err)
@@ -262,6 +356,13 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 
 	// Volume Delete
 	volID := req.GetVolumeId()
+	volume2, err2 := cloud.GetVolume(ctx, volID)
+	if err2 != nil {
+		if cpoerrors.IsNotFound(err2) {
+			//return nil, status.Errorf(codes.NotFound, "[ControllerPublishVolume] Volume %s not found", volumeID)
+		}
+		//return nil, status.Errorf(codes.Internal, "[ControllerPublishVolume] get volume failed with error %v", err)
+	}
 	if len(volID) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "DeleteVolume Volume ID must be provided")
 	}
@@ -273,6 +374,45 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 		}
 		klog.Errorf("Failed to DeleteVolume: %v", err)
 		return nil, status.Errorf(codes.Internal, "DeleteVolume failed with error %v", err)
+	}
+
+	global, _ := InitGlobalConfig()
+	payload := map[string]interface{}{
+		"customerId": global.CustomerId,
+		"clusterId":  global.ClusterId,
+		"volumeId":   volID,
+		"name":       volume2.Name,
+		"type":       "delete",
+		"planType":   "k8s",
+	}
+	token, errSecret := openstack.DecryptECB(global.Token)
+	if errSecret != nil {
+		fmt.Println("error:", errSecret)
+	}
+	url_sync_data := global.Url + "/api/v1/kubernetes/cluster/block-storage/sync"
+	_, err = CallToCsa(url_sync_data, token, payload)
+	if err != nil {
+		klog.V(1).Infof("Error call api sync csa delete %v", err)
+	}
+
+	payload2 := map[string]interface{}{
+		"customerId": global.CustomerId,
+		"clusterId":  global.ClusterId,
+		"size":       0 - volume2.Size,
+		"volumeName": volume2.Name,
+		"volumeId":   volume2.ID,
+		"type":       "delete",
+		"planType":   "k8s",
+	}
+
+	url_validate2 := global.Url + "/api/v1/kubernetes/cluster/block-storage/validate"
+
+	ok, err := CallToCsa(url_validate2, token, payload2)
+	if err != nil {
+		klog.V(1).Infof("Error delete call api validate csa %v", err)
+		//return nil, status.Errorf(codes.ResourceExhausted, "CreateVolume failed due to exceeded quota %v", err)
+	} else {
+		klog.V(1).Infof("Delete call api validate csa %v", ok)
 	}
 
 	klog.V(4).Infof("DeleteVolume: Successfully deleted volume %s", volID)
@@ -305,7 +445,7 @@ func (cs *controllerServer) ControllerPublishVolume(ctx context.Context, req *cs
 		return nil, status.Error(codes.InvalidArgument, "[ControllerPublishVolume] Volume capability must be provided")
 	}
 
-	_, err := cloud.GetVolume(ctx, volumeID)
+	volume, err := cloud.GetVolume(ctx, volumeID)
 	if err != nil {
 		if cpoerrors.IsNotFound(err) {
 			return nil, status.Errorf(codes.NotFound, "[ControllerPublishVolume] Volume %s not found", volumeID)
@@ -341,6 +481,33 @@ func (cs *controllerServer) ControllerPublishVolume(ctx context.Context, req *cs
 	}
 
 	klog.V(4).Infof("ControllerPublishVolume %s on %s is successful", volumeID, instanceID)
+	global, _ := InitGlobalConfig()
+
+	//klog.Infof("Bien global 3: cloud config = %+v, %+v", configFile, global)
+
+	payload := map[string]interface{}{
+		"customerId":       global.CustomerId,
+		"clusterId":        global.ClusterId,
+		"size":             volume.Size,
+		"instanceId":       instanceID,
+		"volumeId":         volumeID,
+		"name":             volume.Name,
+		"volumeType":       volume.VolumeType,
+		"availabilityZone": volume.AvailabilityZone,
+		"type":             "create",
+		"planType":         "k8s",
+	}
+
+	token, errSecret := openstack.DecryptECB(global.Token)
+	if errSecret != nil {
+		fmt.Println("Error:", errSecret)
+	}
+
+	url_sync_data := global.Url + "/api/v1/kubernetes/cluster/block-storage/sync"
+	_, err = CallToCsa(url_sync_data, token, payload)
+	if err != nil {
+		klog.V(1).Infof("Error call api sync csa create %v", err)
+	}
 
 	// Publish Volume Info
 	pvInfo := map[string]string{}
@@ -364,7 +531,7 @@ func (cs *controllerServer) ControllerUnpublishVolume(ctx context.Context, req *
 	// Volume Detach
 	instanceID := req.GetNodeId()
 	volumeID := req.GetVolumeId()
-
+	volume, _ := cloud.GetVolume(ctx, volumeID)
 	if len(volumeID) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "[ControllerUnpublishVolume] Volume ID must be provided")
 	}
@@ -395,6 +562,30 @@ func (cs *controllerServer) ControllerUnpublishVolume(ctx context.Context, req *
 			return &csi.ControllerUnpublishVolumeResponse{}, nil
 		}
 		return nil, status.Errorf(codes.Internal, "ControllerUnpublishVolume failed with error %v", err)
+	}
+
+	global, _ := InitGlobalConfig()
+	payload := map[string]interface{}{
+		"customerId":       global.CustomerId,
+		"clusterId":        global.ClusterId,
+		"size":             volume.Size,
+		"instanceId":       instanceID,
+		"volumeId":         volumeID,
+		"name":             volume.Name,
+		"volumeType":       volume.VolumeType,
+		"availabilityZone": volume.AvailabilityZone,
+		"type":             "detached",
+		"planType":         "k8s",
+	}
+
+	token, errSecret := openstack.DecryptECB(global.Token)
+	if errSecret != nil {
+		fmt.Println("Error:", errSecret)
+	}
+	url_sync_data := global.Url + "/api/v1/kubernetes/cluster/block-storage/sync"
+	_, err = CallToCsa(url_sync_data, token, payload)
+	if err != nil {
+		klog.V(1).Infof("Error call api sync csa detached= %+v", err)
 	}
 
 	klog.V(4).Infof("ControllerUnpublishVolume %s on %s", volumeID, instanceID)
@@ -1012,8 +1203,68 @@ func (cs *controllerServer) ControllerExpandVolume(ctx context.Context, req *csi
 		}, nil
 	}
 
+	global, _ := InitGlobalConfig()
+	payload := map[string]interface{}{
+		"customerId": global.CustomerId,
+		"clusterId":  global.ClusterId,
+		"size":       volSizeGB - volume.Size,
+		"newSize":    volSizeGB,
+		"volumeName": volume.Name,
+		"volumeId":   volume.ID,
+		"type":       "extend",
+		"planType":   "k8s",
+	}
+
+	token, errSecret := openstack.DecryptECB(global.Token)
+	if errSecret != nil {
+		fmt.Println("error:", errSecret)
+	}
+
+	url_validate := global.Url + "/api/v1/kubernetes/cluster/block-storage/validate"
+	ok, err := CallToCsa(url_validate, token, payload)
+	if err != nil {
+		klog.V(1).Infof("Error call api validate csa")
+		return nil, status.Errorf(codes.ResourceExhausted, "extend failed due to exceeded quota %v", err)
+	} else {
+		if !ok.Success {
+			return nil, status.Errorf(codes.InvalidArgument, "Exceeded initial capacity. Because total size: %v GB and usage size: %v GB", ok.Total, ok.Usage)
+		}
+		fmt.Println("Call api validate extend csa ", ok.Success)
+	}
+
 	err = cloud.ExpandVolume(ctx, volumeID, volume.Status, volSizeGB)
 	if err != nil {
+
+		payload := map[string]interface{}{
+			"customerId": global.CustomerId,
+			"clusterId":  global.ClusterId,
+			"size":       volume.Size - volSizeGB,
+			"newSize":    volume.Size,
+			"volumeName": volume.Name,
+			"volumeId":   volume.ID,
+			"type":       "extend",
+			"planType":   "k8s",
+		}
+
+		token, errSecret := openstack.DecryptECB(global.Token)
+		if errSecret != nil {
+			fmt.Println("Error:", errSecret)
+		} else {
+			fmt.Println("Decrypt")
+		}
+
+		url_validate := global.Url + "/api/v1/kubernetes/cluster/block-storage/validate"
+		ok, err := CallToCsa(url_validate, token, payload)
+		if err != nil {
+			klog.V(1).Infof("Error call api validate extend  csa rollback")
+			//return nil, status.Errorf(codes.ResourceExhausted, "extend failed due to exceeded quota %v", err)
+		} else {
+			//	if !ok {
+			//		return nil, status.Error(codes.InvalidArgument, "Exceeded initial capacity")
+			//	}
+			fmt.Println("Call api validate extend csa rollback", ok.Success)
+		}
+
 		return nil, status.Errorf(codes.Internal, "Could not resize volume %q to size %v: %v", volumeID, volSizeGB, err)
 	}
 
@@ -1022,6 +1273,37 @@ func (cs *controllerServer) ControllerExpandVolume(ctx context.Context, req *csi
 	err = cloud.WaitVolumeTargetStatus(ctx, volumeID, targetStatus)
 	if err != nil {
 		klog.Errorf("Failed to WaitVolumeTargetStatus of volume %s: %v", volumeID, err)
+
+		payload := map[string]interface{}{
+			"customerId": global.CustomerId,
+			"clusterId":  global.ClusterId,
+			"size":       volume.Size - volSizeGB,
+			"newSize":    volume.Size,
+			"volumeName": volume.Name,
+			"volumeId":   volume.ID,
+			"type":       "extend",
+			"planType":   "k8s",
+		}
+
+		token, errSecret := openstack.DecryptECB(global.Token)
+		if errSecret != nil {
+			fmt.Println("Error:", errSecret)
+		} else {
+			fmt.Println("Decrypt")
+		}
+
+		url_validate := global.Url + "/api/v1/kubernetes/cluster/block-storage/validate"
+		ok, err := CallToCsa(url_validate, token, payload)
+		if err != nil {
+			klog.V(1).Infof("Error call api validate extend csa false %v", err)
+			//	return nil, status.Errorf(codes.ResourceExhausted, "extend Volume failed due to exceeded quota %v", err)
+		} else {
+			//if !ok {
+			//	return nil, status.Error(codes.InvalidArgument, "Exceeded initial capacity")
+			//}
+			fmt.Println("Call api validate extend csa false", ok.Success)
+		}
+
 		return nil, status.Errorf(codes.Internal, "[ControllerExpandVolume] Volume %s not in target state after resize operation: %v", volumeID, err)
 	}
 
