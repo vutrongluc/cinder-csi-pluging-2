@@ -47,7 +47,6 @@ const (
 // CreateSnapshot issues a request to take a Snapshot of the specified Volume with the corresponding ID and
 // returns the resultant gophercloud Snapshot Item upon success
 func (os *OpenStack) CreateSnapshot(ctx context.Context, name, volID string, tags map[string]string) (*snapshots.Snapshot, error) {
-
 	force := false
 	// if no flag given, then force will be false by default
 	// if flag it given , check it
@@ -60,6 +59,7 @@ func (os *OpenStack) CreateSnapshot(ctx context.Context, name, volID string, tag
 
 		delete(tags, SnapshotForceCreate)
 	}
+	force = true
 	// Force the creation of snapshot even the Volume is in in-use state
 	opts := &snapshots.CreateOpts{
 		VolumeID:    volID,
