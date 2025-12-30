@@ -777,6 +777,8 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 
 	// Create the snapshot if the backup does not already exist and wait for it to be ready
 	if !backupAlreadyExists {
+
+		//validate csa
 		snap, err = cs.createSnapshot(ctx, cloud, name, volumeID, req.Parameters)
 		if err != nil {
 			return nil, err
@@ -789,6 +791,8 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 
 		snap.Status, err = cloud.WaitSnapshotReady(ctx, snap.ID)
 		if err != nil {
+
+			//validate csa roll back
 			klog.Errorf("Failed to WaitSnapshotReady: %v", err)
 			return nil, status.Errorf(codes.Internal, "CreateSnapshot failed with error: %v. Current snapshot status: %v", err, snap.Status)
 		}
@@ -797,6 +801,9 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 	}
 
 	if snapshotType == "snapshot" {
+
+		//csa sync
+
 		return &csi.CreateSnapshotResponse{
 			Snapshot: &csi.Snapshot{
 				SnapshotId:     snap.ID,
@@ -902,6 +909,7 @@ func (cs *controllerServer) createSnapshot(ctx context.Context, cloud openstack.
 	snap, err = cloud.CreateSnapshot(ctx, name, volumeID, properties)
 	if err != nil {
 		klog.Errorf("Failed to Create snapshot: %v", err)
+
 		return nil, status.Errorf(codes.Internal, "CreateSnapshot failed with error %v", err)
 	}
 
