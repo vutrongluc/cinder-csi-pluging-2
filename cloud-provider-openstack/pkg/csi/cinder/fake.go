@@ -99,6 +99,14 @@ var FakeSnapshotRes = snapshots.Snapshot{
 	Status:   "available",
 }
 
+var FakeBackupRes = backups.Backup{
+	ID:       FakeSnapshotID,
+	Name:     "fake-snapshot",
+	VolumeID: FakeVolID,
+	Size:     1,
+	Status:   "available",
+}
+
 var FakeSnapshotsRes = []snapshots.Snapshot{FakeSnapshotRes}
 
 var FakeVolListMultiple = []volumes.Volume{FakeVol1, FakeVol3}

@@ -261,6 +261,22 @@ func (cloud *cloud) CreateBackup(_ context.Context, name, volID, snapshotID, ava
 	return backup, nil
 }
 
+func (cloud *cloud) CreateBackupIncremental(_ context.Context, name, volID, snapshotID, availabilityZone string, tags map[string]string) (*backups.Backup, error) {
+
+	backup := &backups.Backup{
+		ID:               randString(10),
+		Name:             name,
+		Status:           "available",
+		VolumeID:         volID,
+		SnapshotID:       snapshotID,
+		AvailabilityZone: &availabilityZone,
+		CreatedAt:        time.Now(),
+	}
+
+	cloud.backups[backup.ID] = backup
+	return backup, nil
+}
+
 func (cloud *cloud) ListBackups(_ context.Context, filters map[string]string) ([]backups.Backup, error) {
 	var backuplist []backups.Backup
 	startingToken := filters["Marker"]

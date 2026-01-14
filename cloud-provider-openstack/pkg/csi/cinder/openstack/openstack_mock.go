@@ -368,6 +368,28 @@ func (_m *OpenStackMock) CreateBackup(ctx context.Context, name, volID, snapshot
 	return r0, r1
 }
 
+func (_m *OpenStackMock) CreateBackupIncremental(ctx context.Context, name, volID, snapshotID, availabilityZone string, tags map[string]string) (*backups.Backup, error) {
+	ret := _m.Called(name, volID, snapshotID, availabilityZone, tags)
+
+	var r0 *backups.Backup
+	if rf, ok := ret.Get(0).(func(string, string, string, string, map[string]string) *backups.Backup); ok {
+		r0 = rf(name, volID, snapshotID, availabilityZone, tags)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*backups.Backup)
+		}
+	}
+
+	var r1 error
+	if rf, ok := ret.Get(1).(func(string, string, string, string, map[string]string) error); ok {
+		r1 = rf(name, volID, snapshotID, availabilityZone, tags)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 func (_m *OpenStackMock) DeleteBackup(ctx context.Context, backupID string) error {
 	ret := _m.Called(backupID)
 
