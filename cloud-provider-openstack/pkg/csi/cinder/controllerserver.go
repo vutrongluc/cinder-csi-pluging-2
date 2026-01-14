@@ -691,6 +691,7 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 	volumeID := req.GetSourceVolumeId()
 	snapshotType := req.Parameters[openstack.SnapshotType]
 	filters := map[string]string{"Name": name}
+	filtersByVolumeID := map[string]string{"VolumeID": volumeID}
 	backupMaxDurationSecondsPerGB := openstack.BackupMaxDurationSecondsPerGBDefault
 
 	// Current time, used for CreatedAt
@@ -701,12 +702,13 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 	var backupAlreadyExists bool
 	var snap *snapshots.Snapshot
 	var backup *backups.Backup
+	//var backups2 []backups.Backup
 	var backups []backups.Backup
 	var err error
 
 	// Set snapshot type to 'snapshot' by default
 	if snapshotType == "" {
-		snapshotType = "snapshot"
+		snapshotType = "backup"
 	}
 
 	if name == "" {
@@ -776,29 +778,29 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 	}
 
 	// Create the snapshot if the backup does not already exist and wait for it to be ready
-	if !backupAlreadyExists {
-
-		//validate csa
-		snap, err = cs.createSnapshot(ctx, cloud, name, volumeID, req.Parameters)
-		if err != nil {
-			return nil, err
-		}
-
-		ctime = timestamppb.New(snap.CreatedAt)
-		if err = ctime.CheckValid(); err != nil {
-			klog.Errorf("Error to convert time to timestamp: %v", err)
-		}
-
-		snap.Status, err = cloud.WaitSnapshotReady(ctx, snap.ID)
-		if err != nil {
-
-			//validate csa roll back
-			klog.Errorf("Failed to WaitSnapshotReady: %v", err)
-			return nil, status.Errorf(codes.Internal, "CreateSnapshot failed with error: %v. Current snapshot status: %v", err, snap.Status)
-		}
-
-		snapSize = snap.Size
-	}
+	//if !backupAlreadyExists {
+	//
+	//	//validate csa
+	//	snap, err = cs.createSnapshot(ctx, cloud, name, volumeID, req.Parameters)
+	//	if err != nil {
+	//		return nil, err
+	//	}
+	//
+	//	ctime = timestamppb.New(snap.CreatedAt)
+	//	if err = ctime.CheckValid(); err != nil {
+	//		klog.Errorf("Error to convert time to timestamp: %v", err)
+	//	}
+	//
+	//	snap.Status, err = cloud.WaitSnapshotReady(ctx, snap.ID)
+	//	if err != nil {
+	//
+	//		//validate csa roll back
+	//		klog.Errorf("Failed to WaitSnapshotReady: %v", err)
+	//		return nil, status.Errorf(codes.Internal, "CreateSnapshot failed with error: %v. Current snapshot status: %v", err, snap.Status)
+	//	}
+	//
+	//	snapSize = snap.Size
+	//}
 
 	if snapshotType == "snapshot" {
 
@@ -818,8 +820,42 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 	// If snapshotType is 'backup', create a backup from the snapshot and delete the snapshot.
 	if snapshotType == "backup" {
 
+		backups2, err2 := cloud.ListBackups(ctx, filtersByVolumeID)
+		if err2 != nil {
+			klog.Errorf("Failed to get list backup by volumeId: %v", err2)
+			return nil, err
+		}
+		klog.Infof("len backup with volumeId: %v", len(backups2))
+		if len(backups2) == 0 {
+			if !backupAlreadyExists {
+				backup, err = cs.createBackup(ctx, cloud, name+"-full", volumeID, snap, req.Parameters)
+				if err != nil {
+					return nil, err
+				}
+			}
+
+			ctime = timestamppb.New(backup.CreatedAt)
+			if err := ctime.CheckValid(); err != nil {
+				klog.Errorf("Error to convert time to timestamp: %v", err)
+			}
+
+			backup.Status, err = cloud.WaitBackupReady(ctx, backup.ID, snapSize, backupMaxDurationSecondsPerGB)
+			if err != nil {
+				klog.Errorf("Failed to WaitBackupReady: %v", err)
+				return nil, status.Error(codes.Internal, fmt.Sprintf("CreateBackup failed with error %v. Current backups status: %s", err, backup.Status))
+			}
+
+			// Necessary to get all the backup information, including size.
+			backup, err = cloud.GetBackupByID(ctx, backup.ID)
+			if err != nil {
+				klog.Errorf("Failed to GetBackupByID after backup creation: %v", err)
+				return nil, status.Error(codes.Internal, fmt.Sprintf("GetBackupByID failed with error %v", err))
+			}
+
+		}
+
 		if !backupAlreadyExists {
-			backup, err = cs.createBackup(ctx, cloud, name, volumeID, snap, req.Parameters)
+			backup, err = cs.createBackupIncremental(ctx, cloud, name, volumeID, snap, req.Parameters)
 			if err != nil {
 				return nil, err
 			}
@@ -843,11 +879,11 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 			return nil, status.Error(codes.Internal, fmt.Sprintf("GetBackupByID failed with error %v", err))
 		}
 
-		err = cloud.DeleteSnapshot(ctx, backup.SnapshotID)
-		if err != nil && !cpoerrors.IsNotFound(err) {
-			klog.Errorf("Failed to DeleteSnapshot: %v", err)
-			return nil, status.Error(codes.Internal, fmt.Sprintf("DeleteSnapshot failed with error %v", err))
-		}
+		//err = cloud.DeleteSnapshot(ctx, backup.SnapshotID)
+		//if err != nil && !cpoerrors.IsNotFound(err) {
+		//	klog.Errorf("Failed to DeleteSnapshot: %v", err)
+		//	return nil, status.Error(codes.Internal, fmt.Sprintf("DeleteSnapshot failed with error %v", err))
+		//}
 	}
 
 	return &csi.CreateSnapshotResponse{
@@ -932,7 +968,31 @@ func (cs *controllerServer) createBackup(ctx context.Context, cloud openstack.IO
 		}
 	}
 
-	backup, err := cloud.CreateBackup(ctx, name, volumeID, snap.ID, parameters[openstack.SnapshotAvailabilityZone], properties)
+	backup, err := cloud.CreateBackup(ctx, name, volumeID, "snap.ID", parameters[openstack.SnapshotAvailabilityZone], properties)
+	if err != nil {
+		klog.Errorf("Failed to Create backup: %v", err)
+		return nil, status.Error(codes.Internal, fmt.Sprintf("CreateBackup failed with error %v", err))
+	}
+	klog.V(4).Infof("Backup created: %+v", backup)
+
+	return backup, nil
+}
+
+func (cs *controllerServer) createBackupIncremental(ctx context.Context, cloud openstack.IOpenStack, name string, volumeID string, snap *snapshots.Snapshot, parameters map[string]string) (*backups.Backup, error) {
+	// Add cluster ID to the snapshot metadata
+	properties := map[string]string{cinderCSIClusterIDKey: cs.Driver.clusterID}
+
+	// see https://github.com/kubernetes-csi/external-snapshotter/pull/375/
+	// Also, we don't want to tag every param but we still want to send the
+	// 'force-create' flag to openstack layer so that we will honor the
+	// force create functions
+	for _, mKey := range append(sharedcsi.RecognizedCSISnapshotterParams, openstack.SnapshotForceCreate, openstack.SnapshotType) {
+		if v, ok := parameters[mKey]; ok {
+			properties[mKey] = v
+		}
+	}
+
+	backup, err := cloud.CreateBackupIncremental(ctx, name, volumeID, "snap.ID", parameters[openstack.SnapshotAvailabilityZone], properties)
 	if err != nil {
 		klog.Errorf("Failed to Create backup: %v", err)
 		return nil, status.Error(codes.Internal, fmt.Sprintf("CreateBackup failed with error %v", err))

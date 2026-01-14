@@ -61,14 +61,59 @@ func (os *OpenStack) CreateBackup(ctx context.Context, name, volID, snapshotID, 
 		}
 		delete(tags, SnapshotForceCreate)
 	}
-
+	force = true
 	opts := &backups.CreateOpts{
-		VolumeID:         volID,
-		SnapshotID:       snapshotID,
+		VolumeID: volID,
+		//	SnapshotID:       snapshotID,
 		Name:             name,
 		Force:            force,
 		Description:      backupDescription,
 		AvailabilityZone: availabilityZone,
+	}
+
+	if tags != nil {
+		// Set openstack microversion to 3.51 to send metadata along with the backup
+		blockstorageServiceClient.Microversion = "3.51"
+		opts.Metadata = tags
+	}
+
+	// TODO: Do some check before really call openstack API on the input
+	mc := metrics.NewMetricContext("backup", "create")
+	backup, err := backups.Create(ctx, blockstorageServiceClient, opts).Extract()
+	if mc.ObserveRequest(err) != nil {
+		return &backups.Backup{}, err
+	}
+	// There's little value in rewrapping these gophercloud types into yet another abstraction/type, instead just
+	// return the gophercloud item
+	return backup, nil
+}
+
+func (os *OpenStack) CreateBackupIncremental(ctx context.Context, name, volID, snapshotID, availabilityZone string, tags map[string]string) (*backups.Backup, error) {
+	blockstorageServiceClient, err := openstack.NewBlockStorageV3(os.blockstorage.ProviderClient, os.epOpts)
+	if err != nil {
+		return &backups.Backup{}, err
+	}
+
+	force := false
+	// if no flag given, then force will be false by default
+	// if flag it given , check it
+	if item, ok := (tags)[SnapshotForceCreate]; ok {
+		var err error
+		force, err = strconv.ParseBool(item)
+		if err != nil {
+			klog.V(5).Infof("Make force create flag to false due to: %v", err)
+		}
+		delete(tags, SnapshotForceCreate)
+	}
+	force = true
+	opts := &backups.CreateOpts{
+		VolumeID: volID,
+		// SnapshotID:       snapshotID,
+		Name:             name,
+		Force:            force,
+		Description:      backupDescription,
+		AvailabilityZone: availabilityZone,
+		Incremental:      force,
 	}
 
 	if tags != nil {

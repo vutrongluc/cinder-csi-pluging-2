@@ -802,10 +802,31 @@ func TestGlobalListVolumesMultipleClouds(t *testing.T) {
 func TestCreateSnapshot(t *testing.T) {
 
 	osmock.On("CreateSnapshot", FakeSnapshotName, FakeVolID, map[string]string{cinderCSIClusterIDKey: "cluster"}).Return(&FakeSnapshotRes, nil)
+
 	osmock.On("ListSnapshots", map[string]string{"Name": FakeSnapshotName}).Return(FakeSnapshotListEmpty, "", nil)
 	osmock.On("WaitSnapshotReady", FakeSnapshotID).Return(FakeSnapshotRes.Status, nil)
 	osmock.On("ListBackups", map[string]string{"Name": FakeSnapshotName}).Return(FakeBackupListEmpty, nil)
 	osmock.On("GetSnapshotByID", FakeVolID).Return(&FakeSnapshotRes, nil)
+
+	osmock.On("CreateBackup",
+		FakeSnapshotName,
+		FakeVolID,
+		mock.AnythingOfType("string"), // backupID hoặc description
+		mock.AnythingOfType("string"), // snapshotID hoặc metadata
+		mock.AnythingOfType("map[string]string"),
+	).Return(&FakeBackupRes, nil)
+
+	osmock.On("CreateBackupIncremental",
+		FakeSnapshotName,
+		FakeVolID,
+		mock.AnythingOfType("string"), // backupID hoặc description
+		mock.AnythingOfType("string"), // snapshotID hoặc metadata
+		mock.AnythingOfType("map[string]string"),
+	).Return(&FakeBackupRes, nil)
+
+	osmock.On("WaitBackupReady", FakeSnapshotID).Return(FakeBackupRes.Status, nil)
+
+	osmock.On("DeleteSnapshot", FakeSnapshotID).Return(nil)
 	// Init assert
 	assert := assert.New(t)
 
@@ -813,7 +834,8 @@ func TestCreateSnapshot(t *testing.T) {
 	fakeReq := &csi.CreateSnapshotRequest{
 		Name:           FakeSnapshotName,
 		SourceVolumeId: FakeVolID,
-		Parameters:     map[string]string{"tag": "tag1"},
+		//Parameters:     map[string]string{"tag": "tag1"},
+		Parameters: map[string]string{"type": "backup"},
 	}
 
 	// Invoke CreateSnapshot
