@@ -41,6 +41,7 @@ const (
 	snapshotDescription      = "Created by OpenStack Cinder CSI driver"
 	SnapshotForceCreate      = "force-create"
 	SnapshotType             = "type"
+	Incremental              = "incremental"
 	SnapshotAvailabilityZone = "availability"
 )
 
