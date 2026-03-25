@@ -42,6 +42,8 @@ const (
 	SnapshotForceCreate      = "force-create"
 	SnapshotType             = "type"
 	Incremental              = "incremental"
+	NamespaceSnapshot        = "namespaceSnapshot"
+	NameSnapshot             = "nameSnapshot"
 	SnapshotAvailabilityZone = "availability"
 )
 

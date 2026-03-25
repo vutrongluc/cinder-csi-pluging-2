@@ -38,7 +38,6 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/cloud-provider-openstack/pkg/client"
-
 	sharedcsi "k8s.io/cloud-provider-openstack/pkg/csi"
 	"k8s.io/cloud-provider-openstack/pkg/csi/cinder/openstack"
 	"k8s.io/cloud-provider-openstack/pkg/util"
@@ -134,7 +133,8 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	volName := req.GetName()
 	volCapabilities := req.GetVolumeCapabilities()
 	volParams := req.GetParameters()
-
+	pvcName := req.Parameters["csi.storage.k8s.io/pvc/name"]
+	namespace := req.Parameters["csi.storage.k8s.io/pvc/namespace"]
 	if len(volName) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "[CreateVolume] missing Volume Name")
 	}
@@ -306,6 +306,8 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		"volumeName": opts.Name,
 		"type":       "create",
 		"planType":   "k8s",
+		"namespace":  namespace,
+		"pvcName":    pvcName,
 	}
 	token, errSecret := openstack.DecryptECB(global.Token)
 	if errSecret != nil {
@@ -319,7 +321,7 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		return nil, status.Errorf(codes.ResourceExhausted, "CreateVolume failed due to exceeded quota %v", err)
 	} else {
 		if !ok.Success {
-			return nil, status.Errorf(codes.InvalidArgument, "Exceeded initial capacity. Because total size: %v GB and usage size: %v GB", ok.Total, ok.Usage)
+			return nil, status.Errorf(codes.InvalidArgument, "Exceeded initial capacity. Because total size: %v GB, usage size: %v GB, available size: %v GB and create volume size: %v", ok.Total, ok.Usage, ok.Total-ok.Usage, opts.Size)
 		}
 		fmt.Println("call api validate csa create:", ok)
 	}
@@ -691,6 +693,9 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 	volumeID := req.GetSourceVolumeId()
 	snapshotType := req.Parameters[openstack.SnapshotType]
 	incremental := req.Parameters[openstack.Incremental]
+	namespaceSnapShot := req.Parameters[openstack.NamespaceSnapshot]
+	nameSnapshot := req.Parameters[openstack.NameSnapshot]
+
 	filters := map[string]string{"Name": name}
 	filtersByVolumeID := map[string]string{"VolumeID": volumeID}
 	backupMaxDurationSecondsPerGB := openstack.BackupMaxDurationSecondsPerGBDefault
@@ -836,6 +841,32 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 		klog.Infof("len backup with volumeId: %v", len(backups2))
 
 		if incremental == "true" {
+
+			payload := map[string]interface{}{
+				"customerId": global.CustomerId,
+				"clusterId":  global.ClusterId,
+				"size":       volume.Size,
+				"newSize":    volume.Size,
+				"volumeName": name,
+				"volumeId":   volumeID,
+				"type":       "backup-incremental-create",
+				"namespace":  namespaceSnapShot,
+				"pvcName":    nameSnapshot,
+				"planType":   "k8s",
+			}
+
+			url_validate := global.Url + "/api/v1/kubernetes/cluster/block-storage/validate"
+			ok, err := CallToCsa(url_validate, token, payload)
+			if err != nil {
+				klog.V(1).Infof("Error call api validate csa")
+				return nil, status.Errorf(codes.ResourceExhausted, "extend failed due to exceeded quota %v", err)
+			} else {
+				if !ok.Success {
+					return nil, status.Errorf(codes.InvalidArgument, "Exceeded initial capacity. Because total size: %v GB and usage size: %v GB", ok.Total, ok.Usage)
+				}
+				fmt.Println("Call api validate extend csa ", ok.Success)
+			}
+
 			if !backupAlreadyExists {
 				backup, err = cs.createBackupIncremental(ctx, cloud, name, volumeID, snap, req.Parameters)
 				if err != nil {
@@ -872,6 +903,8 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 				"availabilityZone": volume.AvailabilityZone,
 				"type":             "backup-incremental-create",
 				"planType":         "k8s",
+				"namespace":        namespaceSnapShot,
+				"pvcName":          nameSnapshot,
 			}
 
 			url_sync_data := global.Url + "/api/v1/kubernetes/cluster/block-storage/sync"
@@ -880,14 +913,17 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 				klog.V(1).Infof("Error call api sync csa create backup %v", err)
 			}
 		} else {
+
 			payload := map[string]interface{}{
 				"customerId": global.CustomerId,
 				"clusterId":  global.ClusterId,
 				"size":       volume.Size,
 				"newSize":    volume.Size,
-				"volumeName": name + "-full",
+				"volumeName": name,
 				"volumeId":   volumeID,
 				"type":       "backup-full",
+				"namespace":  namespaceSnapShot,
+				"pvcName":    nameSnapshot,
 				"planType":   "k8s",
 			}
 
@@ -939,6 +975,8 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 				"availabilityZone": volume.AvailabilityZone,
 				"type":             "backup-full-create",
 				"planType":         "k8s",
+				"namespace":        namespaceSnapShot,
+				"pvcName":          nameSnapshot,
 			}
 
 			url_sync_data := global.Url + "/api/v1/kubernetes/cluster/block-storage/sync"
@@ -947,126 +985,6 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 				klog.V(1).Infof("Error call api sync csa create backup full %v", err)
 			}
 		}
-		//if len(backups2) == 0 {
-		//
-		//	payload := map[string]interface{}{
-		//		"customerId": global.CustomerId,
-		//		"clusterId":  global.ClusterId,
-		//		"size":       volume.Size,
-		//		"newSize":    volume.Size,
-		//		"volumeName": name + "-full",
-		//		"volumeId":   volumeID,
-		//		"type":       "backup-full",
-		//		"planType":   "k8s",
-		//	}
-		//
-		//	url_validate := global.Url + "/api/v1/kubernetes/cluster/block-storage/validate"
-		//	ok, err := CallToCsa(url_validate, token, payload)
-		//	if err != nil {
-		//		klog.V(1).Infof("Error call api validate csa")
-		//		return nil, status.Errorf(codes.ResourceExhausted, "extend failed due to exceeded quota %v", err)
-		//	} else {
-		//		if !ok.Success {
-		//			return nil, status.Errorf(codes.InvalidArgument, "Exceeded initial capacity. Because total size: %v GB and usage size: %v GB", ok.Total, ok.Usage)
-		//		}
-		//		fmt.Println("Call api validate extend csa ", ok.Success)
-		//	}
-		//
-		//	if !backupAlreadyExists {
-		//		backup, err = cs.createBackup(ctx, cloud, name+"-full", volumeID, snap, req.Parameters)
-		//		if err != nil {
-		//			return nil, err
-		//		}
-		//	}
-		//
-		//	ctime = timestamppb.New(backup.CreatedAt)
-		//	if err := ctime.CheckValid(); err != nil {
-		//		klog.Errorf("Error to convert time to timestamp: %v", err)
-		//	}
-		//
-		//	backup.Status, err = cloud.WaitBackupReady(ctx, backup.ID, snapSize, backupMaxDurationSecondsPerGB)
-		//	if err != nil {
-		//		klog.Errorf("Failed to WaitBackupReady: %v", err)
-		//		return nil, status.Error(codes.Internal, fmt.Sprintf("CreateBackup failed with error %v. Current backups status: %s", err, backup.Status))
-		//	}
-		//
-		//	// Necessary to get all the backup information, including size.
-		//	backup, err = cloud.GetBackupByID(ctx, backup.ID)
-		//	if err != nil {
-		//		klog.Errorf("Failed to GetBackupByID after backup creation: %v", err)
-		//		return nil, status.Error(codes.Internal, fmt.Sprintf("GetBackupByID failed with error %v", err))
-		//	}
-		//
-		//	payloadSync := map[string]interface{}{
-		//		"customerId":       global.CustomerId,
-		//		"clusterId":        global.ClusterId,
-		//		"size":             backup.Size,
-		//		"volumeId":         backup.VolumeID,
-		//		"backupId":         backup.ID,
-		//		"name":             backup.Name,
-		//		"volumeType":       volume.VolumeType,
-		//		"availabilityZone": volume.AvailabilityZone,
-		//		"type":             "backup-create",
-		//		"planType":         "k8s",
-		//	}
-		//
-		//	url_sync_data := global.Url + "/api/v1/kubernetes/cluster/block-storage/sync"
-		//	_, err = CallToCsa(url_sync_data, token, payloadSync)
-		//	if err != nil {
-		//		klog.V(1).Infof("Error call api sync csa create backup full %v", err)
-		//	}
-		//
-		//}
-		//
-		//if !backupAlreadyExists {
-		//	backup, err = cs.createBackupIncremental(ctx, cloud, name, volumeID, snap, req.Parameters)
-		//	if err != nil {
-		//		return nil, err
-		//	}
-		//}
-		//
-		//ctime = timestamppb.New(backup.CreatedAt)
-		//if err := ctime.CheckValid(); err != nil {
-		//	klog.Errorf("Error to convert time to timestamp: %v", err)
-		//}
-		//
-		//backup.Status, err = cloud.WaitBackupReady(ctx, backup.ID, snapSize, backupMaxDurationSecondsPerGB)
-		//if err != nil {
-		//	klog.Errorf("Failed to WaitBackupReady: %v", err)
-		//	return nil, status.Error(codes.Internal, fmt.Sprintf("CreateBackup failed with error %v. Current backups status: %s", err, backup.Status))
-		//}
-		//
-		//// Necessary to get all the backup information, including size.
-		//backup, err = cloud.GetBackupByID(ctx, backup.ID)
-		//if err != nil {
-		//	klog.Errorf("Failed to GetBackupByID after backup creation: %v", err)
-		//	return nil, status.Error(codes.Internal, fmt.Sprintf("GetBackupByID failed with error %v", err))
-		//}
-		//
-		//payloadSync := map[string]interface{}{
-		//	"customerId":       global.CustomerId,
-		//	"clusterId":        global.ClusterId,
-		//	"size":             backup.Size,
-		//	"volumeId":         backup.VolumeID,
-		//	"backupId":         backup.ID,
-		//	"name":             backup.Name,
-		//	"volumeType":       volume.VolumeType,
-		//	"availabilityZone": volume.AvailabilityZone,
-		//	"type":             "backup-create",
-		//	"planType":         "k8s",
-		//}
-		//
-		//url_sync_data := global.Url + "/api/v1/kubernetes/cluster/block-storage/sync"
-		//_, err = CallToCsa(url_sync_data, token, payloadSync)
-		//if err != nil {
-		//	klog.V(1).Infof("Error call api sync csa create backup %v", err)
-		//}
-
-		//err = cloud.DeleteSnapshot(ctx, backup.SnapshotID)
-		//if err != nil && !cpoerrors.IsNotFound(err) {
-		//	klog.Errorf("Failed to DeleteSnapshot: %v", err)
-		//	return nil, status.Error(codes.Internal, fmt.Sprintf("DeleteSnapshot failed with error %v", err))
-		//}
 	}
 
 	return &csi.CreateSnapshotResponse{
@@ -1200,7 +1118,6 @@ func (cs *controllerServer) DeleteSnapshot(ctx context.Context, req *csi.DeleteS
 	if id == "" {
 		return nil, status.Error(codes.InvalidArgument, "Snapshot ID must be provided in DeleteSnapshot request")
 	}
-
 	// If volumeSnapshot object was linked to a cinder backup, delete the backup.
 	back, err := cloud.GetBackupByID(ctx, id)
 	if err == nil && back != nil {
@@ -1209,6 +1126,29 @@ func (cs *controllerServer) DeleteSnapshot(ctx context.Context, req *csi.DeleteS
 			klog.Errorf("Failed to Delete backup: %v", err)
 			return nil, status.Error(codes.Internal, fmt.Sprintf("DeleteBackup failed with error %v", err))
 		}
+
+		global, _ := InitGlobalConfig()
+		token, errSecret := openstack.DecryptECB(global.Token)
+		if errSecret != nil {
+			fmt.Println("error:", errSecret)
+		}
+		payloadSync := map[string]interface{}{
+			"customerId": global.CustomerId,
+			"clusterId":  global.ClusterId,
+			"size":       back.Size,
+			"volumeId":   back.VolumeID,
+			"backupId":   back.ID,
+			"name":       back.Name,
+			"type":       "backup-delete",
+			"planType":   "k8s",
+		}
+
+		url_sync_data := global.Url + "/api/v1/kubernetes/cluster/block-storage/sync"
+		_, err = CallToCsa(url_sync_data, token, payloadSync)
+		if err != nil {
+			klog.V(1).Infof("Error call api sync csa create backup full %v", err)
+		}
+
 	}
 
 	// Delegate the check to openstack itself
@@ -1221,28 +1161,6 @@ func (cs *controllerServer) DeleteSnapshot(ctx context.Context, req *csi.DeleteS
 	//	klog.Errorf("Failed to Delete snapshot: %v", err)
 	//	return nil, status.Errorf(codes.Internal, "DeleteSnapshot failed with error %v", err)
 	//}
-
-	global, _ := InitGlobalConfig()
-	token, errSecret := openstack.DecryptECB(global.Token)
-	if errSecret != nil {
-		fmt.Println("error:", errSecret)
-	}
-	payloadSync := map[string]interface{}{
-		"customerId": global.CustomerId,
-		"clusterId":  global.ClusterId,
-		"size":       back.Size,
-		"volumeId":   back.VolumeID,
-		"backupId":   back.ID,
-		"name":       back.Name,
-		"type":       "backup-delete",
-		"planType":   "k8s",
-	}
-
-	url_sync_data := global.Url + "/api/v1/kubernetes/cluster/block-storage/sync"
-	_, err = CallToCsa(url_sync_data, token, payloadSync)
-	if err != nil {
-		klog.V(1).Infof("Error call api sync csa create backup full %v", err)
-	}
 
 	return &csi.DeleteSnapshotResponse{}, nil
 }
