@@ -339,7 +339,7 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}
 
 	// Set scheduler hints if affinity or anti-affinity is set in PVC annotations
-	var schedulerHints volumes.SchedulerHintOptsBuilder
+	//var schedulerHints volumes.SchedulerHintOptsBuilder
 	var volCtx map[string]string
 	affinity := pvcAnnotations[affinityKey]
 	antiAffinity := pvcAnnotations[antiAffinityKey]
@@ -358,10 +358,10 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 
 		volCtx = util.SetMapIfNotEmpty(volCtx, "affinity", affinity)
 		volCtx = util.SetMapIfNotEmpty(volCtx, "anti-affinity", antiAffinity)
-		schedulerHints = &volumes.SchedulerHintOpts{
-			SameHost:      util.SplitTrim(affinity, ','),
-			DifferentHost: util.SplitTrim(antiAffinity, ','),
-		}
+		//schedulerHints = &volumes.SchedulerHintOpts{
+		//	SameHost:      util.SplitTrim(affinity, ','),
+		//	DifferentHost: util.SplitTrim(antiAffinity, ','),
+		//}
 
 		klog.V(4).Infof("CreateVolume: Resolved scheduler hints: affinity=%s, anti-affinity=%s", affinity, antiAffinity)
 	}
@@ -395,8 +395,8 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	}
 
 	klog.V(1).Infof("request create volume  %v", opts)
-	vol, err := cloud.CreateVolume(ctx, opts, schedulerHints)
-	//vol, err := CallToCsiAnyResponse[volumes.Volume]("/api/v1/csi/volume", opts)
+	//vol, err := cloud.CreateVolume(ctx, opts, schedulerHints)
+	vol, err := CallToCsiAnyResponse[volumes.Volume]("/api/v1/csi/volume", opts)
 	klog.V(1).Infof("response create volume  %v", vol)
 
 	if err != nil {
