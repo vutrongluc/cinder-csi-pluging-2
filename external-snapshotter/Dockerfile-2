@@ -1,0 +1,10 @@
+# Stage 1: build binary
+FROM golang:1.23.6 AS builder
+WORKDIR /workspace
+COPY . .
+RUN cd cmd/csi-snapshotter && go build -o /workspace/csi-snapshotter
+
+# Stage 2: minimal runtime image
+FROM gcr.io/distroless/base-debian12
+COPY --from=builder /workspace/csi-snapshotter /csi-snapshotter
+ENTRYPOINT ["/csi-snapshotter"]
