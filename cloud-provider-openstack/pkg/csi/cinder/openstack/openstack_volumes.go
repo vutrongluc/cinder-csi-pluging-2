@@ -67,7 +67,7 @@ func (os *OpenStack) CreateVolume(ctx context.Context, opts *volumes.CreateOpts,
 	if !os.bsOpts.IgnoreVolumeMicroversion && opts.BackupID != "" {
 		blockstorageClient.Microversion = "3.51"
 	}
-
+	//blockstorageClient.ResourceBase = "http://172.17.0.22:8090"
 	mc := metrics.NewMetricContext("volume", "create")
 	opts.Description = volumeDescription
 	vol, err := volumes.Create(ctx, blockstorageClient, opts, schedulerHints).Extract()

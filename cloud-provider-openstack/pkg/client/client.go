@@ -77,6 +77,7 @@ type AuthOpts struct {
 	ClusterId                   string `name:"clusterId" value:"optional"`
 	Mail                        string `name:"mail" value:"optional"`
 	Url                         string `name:"url" value:"optional"`
+	Urlcsi                      string `name:"Urlcsi" value:"optional"`
 }
 
 func LogCfg(authOpts AuthOpts) {
@@ -288,7 +289,7 @@ func NewOpenStackClient(cfg *AuthOpts, userAgent string, extraUserAgent ...strin
 	}
 
 	provider.HTTPClient.Transport = net.SetOldTransportDefaults(&http.Transport{TLSClientConfig: config})
-
+	provider.TokenID = cfg.Token
 	if klog.V(6).Enabled() {
 		provider.HTTPClient.Transport = &client.RoundTripper{
 			Rt:     provider.HTTPClient.Transport,

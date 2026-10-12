@@ -315,7 +315,7 @@ func CreateOpenStackProvider(cloudName string) (IOpenStack, error) {
 		global.AuthURL = decryptedURL
 	}
 	//klog.Infof("Bien global 4: cloud config = %+v", global)
-
+	global.Token = token
 	provider, err := client.NewOpenStackClient(global, "cinder-csi-plugin", userAgentData...)
 	if err != nil {
 		return nil, err

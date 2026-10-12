@@ -27,6 +27,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/gophercloud/gophercloud/v2/openstack/blockstorage/v3/backups"
@@ -61,6 +62,16 @@ type ResponseData struct {
 	Success bool `json:"success"`
 	Total   int  `json:"total"`
 	Usage   int  `json:"usage"`
+}
+
+var GlobalConfig *client.AuthOpts
+
+func init() {
+	var err error
+	GlobalConfig, err = InitGlobalConfig()
+	if err != nil {
+		klog.Fatalf("InitGlobalConfig failed: %v", err)
+	}
 }
 
 func CallToCsa(url string, token string, payload map[string]interface{}) (*ResponseData, error) {
@@ -101,6 +112,63 @@ func CallToCsa(url string, token string, payload map[string]interface{}) (*Respo
 
 	// Giải mã JSON thành object
 	var result ResponseData
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal error: %v", err)
+	}
+
+	return &result, nil
+}
+
+func CallToCsiAnyResponse[T any](url string, payload any) (*T, error) {
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	bodyRequest := map[string]interface{}{}
+	if err := json.Unmarshal(b, &bodyRequest); err != nil {
+		return nil, err
+	}
+	bodyRequest["customerId"] = GlobalConfig.CustomerId
+	bodyRequest["clusterId"] = GlobalConfig.ClusterId
+	jsonData, err := json.Marshal(bodyRequest)
+	if err != nil {
+		return nil, err
+	}
+
+	api := GlobalConfig.Urlcsi + url
+	token, err := openstack.DecryptECB(GlobalConfig.Token)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt token error: %v", err)
+	}
+
+	klog.Infof("CallToCsiAnyResponse api: %s", api)
+	klog.Infof(" CallToCsiAnyResponse request body api: %s", string(jsonData))
+
+	req, err := http.NewRequest(http.MethodPost, api, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("tạo request lỗi: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("lỗi gửi POST: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read error: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API trả về mã lỗi: %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	var result T
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("unmarshal error: %v", err)
 	}
@@ -300,7 +368,7 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 
 	global, _ := InitGlobalConfig()
 	payload := map[string]interface{}{
-		"customerId": global.CustomerId,
+		"customerId": GlobalConfig.CustomerId,
 		"clusterId":  global.ClusterId,
 		"size":       opts.Size,
 		"volumeName": opts.Name,
@@ -326,7 +394,11 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 		fmt.Println("call api validate csa create:", ok)
 	}
 
+	klog.V(1).Infof("request create volume  %v", opts)
 	vol, err := cloud.CreateVolume(ctx, opts, schedulerHints)
+	//vol, err := CallToCsiAnyResponse[volumes.Volume]("/api/v1/csi/volume", opts)
+	klog.V(1).Infof("response create volume  %v", vol)
+
 	if err != nil {
 		klog.Errorf("Failed to CreateVolume: %v", err)
 		return nil, status.Errorf(codes.Internal, "CreateVolume failed with error %v", err)
